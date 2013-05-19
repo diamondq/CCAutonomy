@@ -232,8 +232,7 @@ end
 function DQWorkerTurtleClass:onPark()
 	logger:debug("onPark()")
 	local rSelf = DQWorkerTurtleClass:cast(self)
-	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("emptyInventory", nil, rSelf:getActorRef())	
---	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("park", nil, rSelf:getActorRef())
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("park", nil, rSelf:getActorRef())
 	return true
 end
 
