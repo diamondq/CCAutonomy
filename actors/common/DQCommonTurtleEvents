@@ -78,7 +78,25 @@ function DQP:eventStart(pMessage, pData)
 	cpLogger:debug("eventStart(%s, %s)", DQDebug.serialize2(pMessage, pData))
 	local rSelf = DQP:cast(self)
 	rSelf.sender = rSelf:getSender()
-	rSelf:setState("move")
+	rSelf:setState("emptyInv")
+	return true
+end
+
+function DQP:onEmptyInv()
+	cpLogger:debug("onEmptyInv()")
+	local rSelf = DQP:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("emptyInventory", nil, rSelf:getActorRef())
+	return true
+end
+
+function DQP:whenEmptyInvEventEmptyInventoryResult(pMessage, pData)
+	cpLogger:debug("whenMoveEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQP:cast(self)
+	if (pData == true) then
+		rSelf:setState("move")
+	else
+		rSelf.sender:tell("parkResult", "Unable to empty inventory prior to parking", rSelf:getActorRef())
+	end
 	return true
 end
 
