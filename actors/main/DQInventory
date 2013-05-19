@@ -159,11 +159,26 @@ end
 
 -- Add to storage
 -- pData = { ci=chest_id, i=item_id, c=count }
--- result = ack
+-- result = true
 function DQInv:eventAddToStorage(pMessage, pData)
 	logger:debug("eventAddToStorage(%s, %s)", DQDebug.serialize2(pMessage, pData))
 	local rSelf = DQInv:cast(self)
-	
+	local itemData = lookupData("item", pData.i)
+	local found = false
+	for _,v in ipairs(itemData) do
+		if (v.ci == pData.ci) then
+			v.c = v.c + pData.c
+			v.r = v.r - pData.c
+			updateData("item", pData.i, itemData)
+			found = true
+			break
+		end
+	end
+	if (found == false) then
+		rSelf:getSender():tell("addToStorageResult", "Unable to find matching chest ID for the given item", rSelf:getActorRef())
+	else
+		rSelf:getSender():tell("addToStorageResult", true, rSelf:getActorRef())
+	end
 	return true
 end
 
