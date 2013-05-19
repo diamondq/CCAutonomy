@@ -1,4 +1,4 @@
-local debug = true
+local debug = false
 local logger = DQDebug.getDebugLogger("DQMover", debug)
 local sConfig = false
 local debugCount = 0
