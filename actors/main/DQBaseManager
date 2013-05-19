@@ -1,0 +1,151 @@
+-- DQBaseClearer
+
+local debug = true
+
+local ssLogger = DQDebug.getDebugLogger("DQSegStatusManager", debug)
+
+local DQSegStatusManager = DQObject.class("DQSegStatusManager", ActorSystem.TypedActor)
+
+----------------------------------------
+----------------------------------------
+----------------------------------------
+--            DQSegStatusManager
+----------------------------------------
+----------------------------------------
+----------------------------------------
+
+function DQSegStatusManager:preStart()
+	ssLogger:debug("preStart()")
+	local rSelf = DQSegStatusManager:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.registry = rSelf:getContext():actorFor("/Registry")
+	-- Watch for anything changing the status of a segment
+	DQStore.registerChangeCallback({ "segs", "floor*", "segX*", "segY*"}, "status",
+		rSelf.class().static.informSegStatus, rSelf, true)
+end
+
+function DQSegStatusManager:issueJob(pSegKeys, pNamePrefix, pJobName, pData, pRequirements)
+	ssLogger:debug("issueJob(%s, %s, %s, %s, %s)", DQDebug.serialize5(pSegKeys, pNamePrefix, pJobName, pData, pRequirements))
+	-- Pass a clear job to the job registry
+	local f = string.sub(pSegKeys[2], 6) .. ""
+	local sx = string.sub(pSegKeys[3], 5) .. ""
+	local sy = string.sub(pSegKeys[4], 5) .. ""
+	local n = f .. "/" .. sx .. "/" .. sy
+	local job = { id=n, job=pJobName, owner=self:getActorRef():getPath(), data=pData }
+	self.registry:tell("newJob", { owner=self:getActorRef():getPath(),
+		name=pNamePrefix .. " " .. n, id=textutils.serialize(pSegKeys), data=job, require=pRequirements }, self:getActorRef())
+end
+
+function DQSegStatusManager:processOnActions(pBX, pBY, pBZ, pActions)
+	ssLogger:debug("processOnActions(%s, %s, %s, %s)", DQDebug.serialize4(pBX, pBY, pBZ, pActions))
+	local rSelf = DQSegStatusManager:cast(self)
+	inv = rSelf:getContext():actorFor("/Inventory")
+	for _,v in ipairs(pActions) do
+		if (v.type == "addchests") then
+			for _,v2 in ipairs(v.chests) do
+				-- Adjust positions
+				v2.x = v2.x + pBX - 1
+				v2.y = v2.y + pBY - 1
+				v2.z = v2.z + pBZ - 1
+				v2.tx = v2.tx + pBX - 1
+				v2.ty = v2.ty + pBY - 1
+				v2.tz = v2.tz + pBZ - 1
+				inv:tell("createOrReplaceChest", v2, rSelf:getActorRef())
+			end
+		end
+	end
+end
+
+function DQSegStatusManager:informSegStatus(pKey1, pKey2, pOldValue, pNewValue)
+	local rSelf = DQSegStatusManager:cast(self)
+	if ((pNewValue == "Clearing") or (pNewValue == "Constructing")) then
+		ssLogger:debug("informSegStatus(%s, %s, %s, %s)", DQDebug.serialize4(pKey1, pKey2, pOldValue, pNewValue))
+		rSelf:getActorRef():tell("registerJob", { segKeys = pKey1 }, rSelf:getActorRef())
+	end
+	if (pOldValue ~= pNewValue) then
+		-- The status has changed
+		local segUsages = DQStore.get(pKey1, "usages", nil)
+		ssLogger:debug("Segment Status Change (%s): From %s to %s Usages: %s", DQDebug.serialize4(pKey1, pOldValue, pNewValue, segUsages))
+		local f,sx,sy = DQPos.getSegDataFromPath(pKey1)
+		local bx,by,bz = DQPos.getMinCoordsFromSeg(f,sx,sy)
+		if ((type(segUsages) ~= "nil") and (#segUsages > 0)) then
+			for _,v in ipairs(segUsages) do
+				if (tostring(v.built) == "true") then
+					local usage = DQUsages.getUsageByID(v.id)
+					if (usage == nil) then
+						error("Unable to find usage")
+					else
+						local plan = usage:getProcessedPlan()
+						if ((type(plan.on["*"]) == "table") and (type(plan.on["*"][pNewValue]) == "table")) then
+							rSelf:processOnActions(bx,by,bz,plan.on["*"][pNewValue])
+						end
+						if ((type(plan.on[pOldValue]) == "table") and (type(plan.on[pOldValue][pNewValue]) == "table")) then
+							rSelf:processOnActions(bx,by,bz,plan.on[pOldValue][pNewValue])
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+-- pData => { segKeys = segKeys }
+function DQSegStatusManager:eventRegisterJob(pMessage, pData)
+	ssLogger:debug("eventRegisterJob(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQSegStatusManager:cast(self)
+	local status = DQStore.get(pData.segKeys, "status", "Untouched")
+	if (status == "Clearing") then
+		-- Pass a clear job to the job registry
+		rSelf:issueJob(pData.segKeys, "Clear", "clear", pData.segKeys, { type="miner" })
+	elseif (status == "Constructing") then
+		local segUsages = DQStore.get(pData.segKeys, "usages", nil)
+		ssLogger:debug("usages: %s", DQDebug.serialize1(segUsages))
+		if ((type(segUsages) ~= "nil") and (#segUsages > 0)) then
+			for _,v in ipairs(segUsages) do
+				if (tostring(v.built) ~= "true") then
+					local usage = DQUsages.getUsageByID(v.id)
+					if (usage == nil) then
+						error("Unable to find usage")
+					else
+						local plan = usage:getProcessedPlan()
+						rSelf:issueJob(pData.segKeys, "Construct", "construct", { segKeys=pData.segKeys, plan=plan }, { type="miner" } )
+					end
+					break
+				end
+			end
+		end
+	end
+	return true
+end
+
+function DQSegStatusManager:eventJobStatus(pMessage, pData)
+	ssLogger:debug("eventJobStatus(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQSegStatusManager:cast(self)
+	if (pData.status == "failed") then
+		local k = textutils.unserialize(pData.id)
+		local oldStatus = DQStore.get(k, "status")
+		if (oldStatus == "Clearing") then
+			
+		else
+			DQStore.store(k, "status", "Untouched")
+		end
+		return true
+	elseif (pData.status == "ack") then
+		return true
+	elseif (pData.status == "working") then
+		return true
+	elseif (pData.status == "done") then
+		local k = textutils.unserialize(pData.id)
+		local oldStatus = DQStore.get(k, "status")
+		if (oldStatus == "Clearing") then
+			DQStore.store(k, "status", "Cleared")
+		elseif (oldStatus == "Constructing") then
+			DQStore.store(k, "status", "Occupied")
+		end
+		return true
+	end
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	ActorSystem.actorCreate(DQSegStatusManager, "/SegStatusManager")
+end

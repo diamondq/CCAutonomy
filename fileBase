@@ -1,0 +1,90 @@
+type=file, file=DQShell
+type=file, file=planUploader
+type=API, loadPhase=1, file=apis/LibCompress
+type=API, loadPhase=1, file=apis/DQObject
+type=API, loadPhase=1, file=apis/DQDebug
+type=API, loadPhase=1, file=apis/DQUtils
+type=API, loadPhase=1, file=apis/DQPos
+type=API, loadPhase=1, file=apis/DQUI
+type=API, loadPhase=1, file=apis/DQStore
+type=API, loadPhase=1, file=apis/DQNet
+type=API, loadPhase=1, file=apis/ActorSystem
+type=API, loadPhase=1, file=apis/FiniteStateMachine
+type=API, loadPhase=1, file=apis/DQGPS
+-- type=API, loadPhase=1, file=apis/DQEngine
+-- type=API, file=apis/DQGoals
+-- type=API, file=apis/DQStdGoals
+
+-- type=API, computer_type=actor, file=actors/test/TestActor
+
+type=API, computer_type=miner, file=actors/turtle/DQWorkerTurtle
+type=API, computer_type=miner, file=actors/miner/ClearSegmentJob
+type=API, computer_type=miner, file=actors/miner/ConstructionJob
+type=API, computer_type=miner, file=actors/common/DQRemoteStore
+type=API, computer_type=miner, file=actors/common/DQMover
+type=API, computer_type=miner, file=actors/common/DQTurtle
+type=API, computer_type=miner, file=actors/turtle/DQMovePlannerDebug
+type=API, computer_type=miner, file=actors/turtle/DQMovePlanner
+type=API, computer_type=miner, file=actors/common/DQCommonTurtleEvents
+type=API, computer_type=miner, file=actors/common/DQLogisticsManager
+
+type=API, computer_type=farmer, file=actors/farmer/DenseFarmer
+type=API, computer_type=farmer, file=actors/common/DQRemoteStore
+type=API, computer_type=farmer, file=actors/common/DQMover
+type=API, computer_type=farmer, file=actors/common/DQTurtle
+type=API, computer_type=farmer, file=actors/turtle/DQMovePlannerDebug
+type=API, computer_type=farmer, file=actors/turtle/DQMovePlanner
+type=API, computer_type=farmer, file=actors/common/DQCommonTurtleEvents
+type=API, computer_type=farmer, file=actors/common/DQLogisticsManager
+
+type=API, computer_type=main, file=actors/common/DQQueueProcessor
+type=API, computer_type=main, file=actors/main/DQBaseManager
+type=API, computer_type=main, file=actors/main/DQInitialSetup
+type=API, computer_type=main, file=actors/main/DQMainStore
+type=API, computer_type=main, file=actors/main/DQMilestones
+type=API, computer_type=main, file=actors/main/DQPlanCompiler
+type=API, computer_type=main, file=actors/main/DQUsages
+-- type=API, computer_type=main, file=actors/main/DQStdUsages
+type=API, computer_type=main, file=actors/main/DQWorkerRegistry
+type=API, computer_type=main, file=actors/main/FarmManager
+type=API, computer_type=main, file=actors/main/SegmentUI
+type=API, computer_type=main, file=actors/main/DQInventory
+type=file, computer_type=main, file=plans/storage
+type=file, computer_type=main, file=plans/treefarm
+type=file, computer_type=main, file=plans/compact_base
+type=file, computer_type=main, file=plans/dense_farm
+type=file, computer_type=main, file=plans/planter_treefarm_1
+type=file, computer_type=main, file=plans/glass_well_NW
+type=file, computer_type=main, file=plans/glass_well_NE
+type=file, computer_type=main, file=plans/glass_well_SW
+type=file, computer_type=main, file=plans/glass_well_SE
+type=file, computer_type=main, file=plans/simple
+type=file, computer_type=main, file=plans/base
+type=file, computer_type=main, file=plans/base_level_1
+type=file, computer_type=main, file=plans/storage_level_1
+-- type=API, computer_type=main, file=goals/main/DQManageTurtles
+-- type=API, computer_type=main, file=goals/main/DQManageInventory
+-- type=file, computer_type=main, file=DQMain
+-- type=API, computer_type=main, file=actors/main/DQBaseClearer
+-- type=API, computer_type=main, file=goals/main/DQClearBase
+-- type=API, computer_type=main, file=goals/main/DQConstruction
+
+-- type=API, computer_type=treefarmer, file=goals/treefarmer/DQTreeFarmer
+
+-- type=API, computer_type=sorter, file=goals/sorter/DQSorter
+
+-- type=API, computer_type=crafter, file=goals/crafter/DQCrafter
+-- type=API, computer_type=crafter, file=goals/common/DQTurtle
+-- type=API, computer_type=crafter, file=goals/common/DQMovePlanner
+-- type=API, computer_type=crafter, file=goals/common/DQMover
+
+-- type=file, computer_type=tester, file=plans/storage
+-- type=API, computer_type=tester, file=actors/main/DQUsages
+-- type=API, computer_type=tester, file=actors/main/DQConstruction
+-- type=API, computer_type=tester, file=actors/main/DQStdUsages
+-- type=API, computer_type=tester, file=actors/main/DQPlanCompiler
+-- type=API, computer_type=tester, file=tests/DQTester
+-- type=API, computer_type=tester, file=tests/DQStoreTests
+-- type=API, computer_type=tester, file=tests/DQPlanCompilerTests
+
+-- type=file, computer_type=monitor, file=DQMonitor

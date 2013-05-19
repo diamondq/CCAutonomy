@@ -1,0 +1,129 @@
+programTitle = "DiamondQ Manager v2"
+monitors = {}
+fileList = {}
+running = true
+config = {}
+sDebug = true
+sPullEvent = false
+
+function loadConfigurationFile(pFilePath)
+	local configData = {}
+	if (fs.exists(pFilePath) == true) then
+		local h = fs.open(pFilePath, "r")
+		local line = h.readLine()
+		while (type(line) ~= "nil") do
+			local x,y,key,value = string.find(line, "([^%s=]+)%s*=%s*(.*)")
+			if (type(x) ~= "nil") then
+				if (string.sub(key, 1, 2) ~= '--') then
+					if ((string.sub(value, 1, 1) == "\"") and (string.sub(value, -1) == "\"")) then
+						configData[key] = string.sub(value, 2, string.len(value) - 1) .. ""
+					else
+						configData[key] = value..""
+					end
+				end
+			end
+			line = h.readLine()
+		end
+		h.close()
+	end
+	configData.writeIgnore = {}
+	configData.writeIgnore.writeIgnore = true
+	return configData
+end
+-- Security check
+for _,v in ipairs(rs.getSides()) do
+	if (disk.isPresent(v)) then
+		local diskConfigPath = disk.getMountPath(v) .. "/config_" .. v
+		if (fs.exists(diskConfigPath)) then
+			local securityConfig = loadConfigurationFile(diskConfigPath)
+			if (type(securityConfig["debug"]) ~= "nil") then
+				if (securityConfig["debug"] == "true") then
+					sDebug = true
+				end
+				break
+			end
+		end
+	end
+end
+if (sDebug == false) then
+	-- Disable the interruptability
+	sPullEvent = os.pullEvent
+	os.pullEvent = os.pullEventRaw
+end
+
+config = loadConfigurationFile("config")
+config.writeIgnore.baseURL = true
+config.writeIgnore.pullEvent = true
+config.pullEvent = sPullEvent
+fileList = loadfile("fileList")()
+
+local mw, mh = term.getSize()
+monitors["console"] = { obj = term, w = mw, h = mh }
+for k,v in pairs(rs.getSides()) do
+	if (peripheral.isPresent(v)) then
+		if (peripheral.getType(v) == "monitor") then
+			local w = peripheral.wrap(v)
+			local mw, mh = w.getSize()
+			monitors[v] = { obj = w, w = mw, h = mh }
+		end
+	end
+end
+
+eventHandlers = {}
+
+for _,v in ipairs(fileList) do
+	if ((type(v.computer_type) == "nil") and (v.file ~= "DQShell") and (v.type == "API")) then
+		if (type(_G[fs.getName(v.file)].setup) == "function") then
+			_G[fs.getName(v.file)].setup(programTitle, config, eventHandlers)
+		end
+	end
+end
+
+for _,v in ipairs(fileList) do
+	if ((type(v.computer_type) ~= "nil") and (v.computer_type == config.computer_type) and (v.type == "API")) then
+		if (type(_G[fs.getName(v.file)].setup) == "function") then
+			_G[fs.getName(v.file)].setup(programTitle, config, eventHandlers)
+		end
+	end
+end
+
+if (type(DQNet) ~= "nil") then
+	if (type(config.network_password) == "nil") then
+		print("No network password is assigned. Exiting...")
+		return
+	end
+	DQNet.join()
+end
+DQUI.calculateNext()
+
+for k,v in pairs(monitors) do
+	v.obj.clear()
+end
+
+DQUI.refresh()
+
+while running do
+	local event, param1, param2, param3, param4, param5
+	local queue = DQUtils.getYieldQueue()
+	if (#queue > 0) then
+		local elem = table.remove(queue, 1)
+		event = elem.event
+		param1 = elem.param1
+		param2 = elem.param2
+		param3 = elem.param3
+		param4 = elem.param4
+		param5 = elem.param5
+	else
+		event, param1, param2, param3, param4, param5 = os.pullEvent()
+		DQUtils.setLastPull()
+	end
+	if ((event == "terminate") and (sDebug == true)) then
+		error("Terminating")
+	end
+	for _,handler in ipairs(eventHandlers) do
+		local r = handler(event, param1, param2, param3, param4, param5)
+		if ((type(r) == "boolean") and (r == true)) then
+			break
+		end
+	end
+end

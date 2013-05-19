@@ -1,0 +1,42 @@
+
+----------------------------------------------------------------
+----------------------------------------------------------------
+-- TEST ACTORS
+----------------------------------------------------------------
+----------------------------------------------------------------
+
+Actor1Class = DQObject.class("Actor1Class", ActorSystem.ActorClass)
+function Actor1Class:preStart()
+	DQDebug.writeToLog("Actor1Class preStart")
+end
+function Actor1Class:receive(pMessage)
+	local rSelf = Actor1Class:cast(self)
+	if (pMessage == "Simple") then
+		rSelf:getContext():actorFor("TA2"):tell("Message1", rSelf:getActorRef())
+	elseif (pMessage == "Message2") then
+		DQDebug.writeToLog("Received final message")
+	else
+		self.super:receive(pMessage)
+	end
+end
+
+Actor2Class = DQObject.class("Actor2Class", ActorSystem.ActorClass)
+function Actor2Class:preStart()
+	DQDebug.writeToLog("Actor1Class preStart")
+end
+function Actor2Class:receive(pMessage)
+	local rSelf = Actor2Class:cast(self)
+	if (pMessage == "Message1") then
+		rSelf:getSender():tell("Message2", rSelf:getActorRef())
+	else
+		self.super:receive(pMessage)
+	end
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	programTitle = pTitle
+	config = pConfig
+	local a1Ref = ActorSystem.actorCreate(Actor1Class, "TA1")
+	local a2Ref = ActorSystem.actorCreate(Actor2Class, "TA2")
+	a1Ref:tell("Simple", nil)
+end

@@ -1,0 +1,1280 @@
+local sINFINITE = 999999
+local sMaxE = 1
+local sConfig = {}
+local debug = false
+local logger = DQDebug.getDebugLogger("DQMovePlanner", debug)
+mp = DQMovePlannerDebug.getLogger(false)
+
+function stateToString(pState)
+	local m = "["
+	local f = true
+	if (type(pState) == "table") then
+		for _,v in ipairs(pState) do
+			if (f == true) then
+				f = false
+			else
+				m = m .. ", "
+			end
+			m = m .. tostring(v)
+		end
+	end
+	m = m .. "]"
+	return m
+end
+
+-- Calculates the state priority. Used to prioritize the next state to search
+local function key(pPlan, pS)
+	local v_g = pPlan.funcs.g(pPlan, pS)
+	local v_rhs = pPlan.funcs.rhs(pPlan, pS)
+	if (v_g > v_rhs) then
+		return { v_rhs + (pPlan.e * pPlan.funcs.h(pWorld, pPlan, pPlan.SStart, pS)), v_rhs }
+	else
+		return { v_g + pPlan.funcs.h(pWorld, pPlan, pPlan.SStart, pS), v_g }
+	end
+end
+
+local function searchInSortedSet(pPlan, pSet, pS, pCompareFunc)
+	local iStart,iEnd,iMid = 1,#pSet,0
+	while iStart <= iEnd do
+		iMid = math.floor((iStart + iEnd) / 2)
+		local value2 = pCompareFunc(pPlan, pS, pSet[iMid][2])
+		if (value2 == 0) then
+			local results,num = { iMid, iMid }, iMid - 1
+			while ((num > iStart) and (pCompareFunc(pPlan, pS, pSet[num][2]) == 0)) do
+				results[1] = num
+				num = num - 1
+			end
+			num = iMid + 1
+			while ((num < iEnd) and (pCompareFunc(pPlan, pS, pSet[num][2]) == 0)) do
+				results[2] = num
+				num = num + 1
+			end
+			return results
+		elseif (value2 < 0) then
+			iEnd = iMid - 1
+		else
+			iStart = iMid + 1
+		end
+	end
+end
+
+local function inSortedSet(pPlan, pSet, pS, pPriority, pValueCompareFunc, pPriorityCompareFunc)
+	local range = searchInSortedSet(pPlan, pSet, pPriority, pPriorityCompareFunc)
+	if (type(range) == "nil") then
+		return false
+	end
+	for c=range[1],range[2] do
+		if (pValueCompareFunc(pPlan, pS, pSet[c][1]) == 0) then
+			return true
+		end
+	end
+	return false
+end
+
+local function removeFromSortedSet(pPlan, pSet, pS, pPriority, pValueCompareFunc, pPriorityCompareFunc)
+-- dump({pSet=pSet, pS=pS, pPriority=pPriority, pPriorityCompareFunc=pPriorityCompareFunc}, "removeFromSortedSet")
+	local range = searchInSortedSet(pPlan, pSet, pPriority, pPriorityCompareFunc)
+	if (type(range) == "nil") then
+		return {}
+	end
+	if (type(pValueCompareFunc) == "nil") then
+		local r = {}	
+		for c=range[2],range[1],-1 do
+			table.insert(r, pSet[c][1])
+		end
+		return r
+	else
+		for c=range[2],range[1],-1 do
+			if (pValueCompareFunc(pPlan, pS, pSet[c][1]) == 0) then
+				table.remove(pSet, c)
+			end
+		end
+	end
+	return {}
+end
+
+local function keyComparator(pPlan, pKey1, pKey2)
+	if (pKey1[1] < pKey2[1]) then
+		return -1
+	elseif (pKey1[1] > pKey2[1]) then
+		return 1
+	elseif (pKey1[2] < pKey2[2]) then
+		return -1
+	elseif (pKey1[2] > pKey2[2]) then
+		return 1
+	else
+		return 0
+	end
+end
+
+local function peekFromSortedSet(pPlan, pSet)
+	if (#pSet == 0) then
+		return nil, { sINFINITE, SINFINTE }
+	end
+	return pSet[1][1], pSet[1][2]
+end
+
+local function popFromOpen(pPlan)
+	local v = pPlan.OPEN_BY_KEY[1][1]
+	local k = pPlan.OPEN_BY_KEY[1][2]
+	table.remove(pPlan.OPEN_BY_KEY, 1)
+	removeFromSortedSet(pPlan, pPlan.OPEN_BY_STATE, k, v, keyComparator, pPlan.funcs.stateComparator)
+	mp:adjustOpenSet(pPlan, pPlan.OPEN_BY_KEY)
+	mp:increaseTime()
+end
+
+local function addToSortedSet(pPlan, pSet, pS, pPriority, pCompareFunc)
+	local iStart,iEnd,iMid,iState = 1,#pSet,1,0
+	-- Get insert position
+	while iStart <= iEnd do
+		-- calculate middle
+		iMid = math.floor((iStart + iEnd) / 2)
+		-- compare
+		if (pCompareFunc(pPlan, pPriority, pSet[iMid][2]) < 0) then
+			iEnd,iState = iMid - 1,0
+		else
+			iStart,iState = iMid + 1,1
+		end
+	end
+	table.insert(pSet, (iMid + iState), { pS, pPriority })
+end
+
+local function addToUnsortedSet(pPlan, pSet, pS)
+	table.insert(pSet, pS)
+-- DQDebug.writeToLog("Adding " .. stateToString(pS) .. " to INCONS")
+end
+
+local function addToOpen(pPlan, pS)
+	local k = key(pPlan, pS)
+-- DQDebug.writeToLog("Adding " .. stateToString(pS) .. " to OPEN at [" .. tostring(k[1]) .. ";" .. tostring(k[2]) .. "]")	
+	addToSortedSet(pPlan, pPlan.OPEN_BY_KEY, pS, k, keyComparator)
+	addToSortedSet(pPlan, pPlan.OPEN_BY_STATE, k, pS, pPlan.funcs.stateComparator)
+	mp:adjustOpenSet(pPlan, pPlan.OPEN_BY_KEY)
+	mp:increaseTime()
+end
+
+local function removeFromOpen(pPlan, pS)
+-- DQDebug.writeToLog("Removing " .. stateToString(pS) .. " from OPEN")	
+	local vt = removeFromSortedSet(pPlan, pPlan.OPEN_BY_STATE, nil, pS, nil, pPlan.funcs.stateComparator)
+	for _,v in pairs(vt) do
+		removeFromSortedSet(pPlan, pPlan.OPEN_BY_KEY, pS, v, pPlan.funcs.stateComparator, keyComparator)
+		removeFromSortedSet(pPlan, pPlan.OPEN_BY_STATE, v, pS, keyComparator, pPlan.funcs.stateComparator)
+	end
+	mp:adjustOpenSet(pPlan, pPlan.OPEN_BY_KEY)
+	mp:increaseTime()
+end
+
+local function updateState(pWorld, pPlan, pS)
+	if (pPlan.funcs.compareState(pPlan, pS, pPlan.SGoal) == false) then
+		local min = sINFINITE
+		local succs = pPlan.funcs.succ(pWorld, pPlan, pS)
+		if (succs.needData == true) then
+-- DQDebug.writeToLog("succs need data")
+			return succs.state
+		end
+		for _,s1 in ipairs(succs) do
+			local v = pPlan.funcs.c(pWorld, pPlan, pS, s1) + pPlan.funcs.g(pPlan, s1)
+			if (v < min) then
+				min = v
+			end
+		end
+		pPlan.funcs.setRHS(pPlan, pS, min)
+	end
+	removeFromOpen(pPlan, pS)
+	if (pPlan.funcs.g(pPlan, pS) ~= pPlan.funcs.rhs(pPlan, pS)) then
+		if (inSortedSet(pPlan, pPlan.CLOSED, pS, pS, pPlan.funcs.stateComparator, pPlan.funcs.stateComparator) == false) then
+			addToOpen(pPlan, pS)
+		else
+			addToUnsortedSet(pPlan, pPlan.INCONS, pS)
+		end
+	end
+	pPlan.expansions = pPlan.expansions + 1
+	return true
+end
+
+
+local function computeOrImprovePath(pWorld, pPlan)
+	local minS, minKey = peekFromSortedSet(pPlan, pPlan.OPEN_BY_KEY)
+	local cont = (((type(minKey) ~= "nil") and (keyComparator(pPlan, minKey, key(pPlan, pPlan.SStart)) < 0)) or (pPlan.funcs.rhs(pPlan, pPlan.SStart) ~= pPlan.funcs.g(pPlan, pPlan.SStart)))
+--[=[  dddd ]=]
+--[=[ DQDebug.writeToLog("coip: minKey=[" .. tostring(minKey[1]) .. "," .. tostring(minKey[2]) .. "] minS=" .. stateToString(minS) .. " startKey=[" .. tostring(key(pPlan, pPlan.SStart)[1]) .. ","
+	.. tostring(key(pPlan, pPlan.SStart)[2]) .. "] rhs(start)=" .. tostring(pPlan.funcs.rhs(pPlan, pPlan.SStart)) .. " g(start)=" .. tostring(pPlan.funcs.g(pPlan, pPlan.SStart))
+	.. " cont=" .. tostring(cont)) 
+]=]
+	local yieldCount = 1
+	while (cont == true) do
+-- DQDebug.dump(pPlan.OPEN_BY_KEY, "OPEN_BY_KEY")
+-- DQDebug.dump(pPlan.OPEN_BY_STATE, "OPEN_BY_STATE")
+-- io.stdin:read("*l")
+-- DQDebug.writeToLog("Processing " .. stateToString(minS))
+		mp:computing(pPlan, minS)
+		mp:increaseTime()
+		
+		-- Get the predecessors. This may fail because of lack of knowledge
+		local preds = pPlan.funcs.pred(pWorld, pPlan, minS)
+		if (preds.needData == true) then
+			return preds.state
+		end
+		popFromOpen(pPlan)
+		local s_rhs = pPlan.funcs.rhs(pPlan, minS)
+		if (pPlan.funcs.g(pPlan, minS) > s_rhs) then
+			pPlan.funcs.setG(pPlan, minS, s_rhs)
+			addToSortedSet(pPlan, pPlan.CLOSED, minS, minS, pPlan.funcs.stateComparator)
+			for _,s1 in ipairs(preds) do
+				local r = updateState(pWorld, pPlan, s1) 
+				if (type(r) == "table") then
+					return r
+				end
+			end
+		else
+			pPlan.funcs.setG(pPlan, minS, sINFINITE)
+			for _,s1 in ipairs(preds) do
+				local r = updateState(pWorld, pPlan, s1) 
+				if (type(r) == "table") then
+					return r
+				end
+			end
+			local r = updateState(pWorld, pPlan, minS)
+			if (type(r) == "table") then
+				return r
+			end
+		end
+		minS, minKey = peekFromSortedSet(pPlan, pPlan.OPEN_BY_KEY)
+		cont = (((type(minS) ~= "nil") and (keyComparator(pPlan, minKey, key(pPlan, pPlan.SStart)) < 0)) or (pPlan.funcs.rhs(pPlan, pPlan.SStart) ~= pPlan.funcs.g(pPlan, pPlan.SStart)))
+--[=[ DQDebug.writeToLog("coip: minKey=[" .. tostring(minKey[1]) .. "," .. tostring(minKey[2]) .. "] minS=" .. stateToString(minS) .. " startKey=[" .. tostring(key(pPlan, pPlan.SStart)[1]) .. ","
+	.. tostring(key(pPlan, pPlan.SStart)[2]) .. "] rhs(start)=" .. tostring(pPlan.funcs.rhs(pPlan, pPlan.SStart)) .. " g(start)=" .. tostring(pPlan.funcs.g(pPlan, pPlan.SStart))
+	.. " cont=" .. tostring(cont)) 
+]=]
+		yieldCount = yieldCount + 1
+		if (yieldCount > 20) then
+			DQUtils.yield()
+			yieldCount = 1
+		end
+	end
+	return true
+end
+
+-- A plan contains
+--	SStart	which is the start state
+--	SGoal	which is the goal state
+--	funcs	which is the table of accessor functions  to access the world, and to manipulate the state, etc.
+--		setG is a function that takes a plan, a state and a value, and should set the g(s)=value
+--		setRHS is a function that takes a plan, a state and a value, and should set the rhs(s)=value
+--	e		which is the expansionary factor
+--	OPEN	which is the OPEN set of states, sorted by key(s)
+--	CLOSED	which is the CLOSED set of states
+--	INCONS	which is the INCONS (inconsistent) set of states
+-- 	memory	which is the internal working memory (a set of g(s) and rhs(s) values for each expanded state) 
+
+function createPlan(pFuncs, pSStart, pSGoal)
+	local plan = {}
+	plan.SStart = pSStart
+	plan.SGoal = pSGoal
+	plan.funcs = pFuncs
+	plan.e = 1
+	plan.OPEN_BY_KEY = {}
+	plan.OPEN_BY_STATE = {}
+	plan.CLOSED = {}
+	plan.INCONS = {}
+	plan.memory = {}
+	plan.changes = {}
+	mp:setStart(plan, pSStart)
+	mp:clearGoals(plan)
+	mp:addGoal(plan, pSGoal)
+	mp:increaseTime()
+	return plan
+end
+
+-- pWorld represents the known data about the world state (ie. which items are passable, etc.)
+-- pPlan represents a plan that was created by createPlan earlier
+-- Will return a path object and a plan object
+--	The plan object is opaque, but it used during a nextIterationOfPlan
+--	The path object contains a sequential list of state changes that will progress from the start state to the goal state 
+function initialPlan(pWorld, pPlan)
+	pPlan.memory = {}
+	pPlan.changes = {}
+	pPlan.e = sMaxE
+	pPlan.OPEN_BY_KEY = {}
+	pPlan.OPEN_BY_STATE = {}
+	pPlan.CLOSED = {}
+	pPlan.INCONS = {}
+	pPlan.expansions = 0
+	if (pPlan.funcs.compareState(pPlan, pPlan.SStart, pPlan.SGoal) == true) then
+		return true
+	end
+	pPlan.funcs.setG(pPlan, pPlan.SStart, sINFINITE)
+	pPlan.funcs.setRHS(pPlan, pPlan.SStart, sINFINITE)
+	pPlan.funcs.setG(pPlan, pPlan.SGoal, sINFINITE)
+	pPlan.funcs.setRHS(pPlan, pPlan.SGoal, 0)
+	addToOpen(pPlan, pPlan.SGoal)
+	return computeOrImprovePath(pWorld, pPlan)
+end
+
+function resumeInitialPlan(pWorld, pPlan)
+	return computeOrImprovePath(pWorld, pPlan)
+end
+
+function getNextMove(pWorld, pPlan)
+	local s = false
+	local min = sINFINITE
+	if (pPlan.funcs.compareState(pPlan, pPlan.SStart, pPlan.SGoal) == true) then
+		return nil
+	end
+	local succs = pPlan.funcs.succ(pWorld, pPlan, pPlan.SStart)
+	if (succs.needData == true) then
+		return succs
+	end
+	for _,v in ipairs(succs) do
+		local v_g = pPlan.funcs.g(pPlan, v)
+		if (v_g < min) then
+			min = v_g
+			s = v
+		end
+	end
+	if (s == false) then
+		return nil
+	else
+		return s
+	end
+end
+
+function getFastestPath(pWorld, pPlan)
+	local s = pPlan.SStart
+-- DQDebug.dump(pPlan, "getFastestPath")
+	local path = {}
+	repeat
+		DQDebug.writeToLog("Plan: " .. stateToString(s))
+		local seen = false
+		for _,v in ipairs(path) do
+			if (pPlan.funcs.stateComparator(pPlan, v, s) == 0) then
+				seen = true
+			end
+		end
+		if (seen == true) then
+DQDebug.writeToLog("New element " .. stateToString(s) .. " already on path")
+			DQDebug.dump(path, "seen Path")
+			DQDebug.dump(pPlan, "seen plan")
+			error()
+		end
+		table.insert(path, s)
+		local min = sINFINITE
+		for _,v in ipairs(pPlan.funcs.succ(pWorld, pPlan, s)) do
+			local v_g = pPlan.funcs.g(pPlan, v)
+			DQDebug.writeToLog("v: " .. stateToString(v) .. " g=" .. tostring(v_g))
+			if (v_g < min) then
+				min = v_g
+				s = v
+			end
+		end
+	until pPlan.funcs.stateComparator(pPlan, s, pPlan.SGoal) == 0
+	table.insert(path, pPlan.SGoal)
+--	DQDebug.writeToLog("Expansions: " .. tostring(pPlan.expansions))
+	for _,v in ipairs(path) do
+		local m = "["
+		local f = true
+		for _,v2 in ipairs(v) do
+			if (f == true) then
+				f = false
+			else
+				m = m .. ", "
+			end
+			m = m .. tostring(v2)
+		end 
+		m = m .. "]"
+--		DQDebug.writeToLog(m)
+	end	
+end
+
+function changeStart(pPlan, pS)
+	pPlan.SStart = pS
+end
+
+function nextIterationOfPlan(pWorld, pPlan)
+	local change = false
+	local c = pPlan.changes
+	pPlan.changes = {}
+	for _,v in ipairs(c) do
+		change = true
+		local preds = pPlan.funcs.pred(pWorld, pPlan, v)
+		if (preds.needData == true) then
+			return preds.state
+		end
+		for _,s1 in ipairs(preds) do
+-- DQDebug.writeToLog("Due to changes, updating state of " .. stateToString(s1))		
+			local us = updateState(pWorld, pPlan, s1)
+			if (type(us) == "table") then
+				return us
+			end
+		end
+		local r
+		r = pPlan.funcs.isWorldAccessible(pWorld, pPlan, v)
+		if (r == true) then
+-- DQDebug.writeToLog("Due to changes, updating state of " .. stateToString(v))		
+			local us = updateState(pWorld, pPlan, v)
+			if (type(us) == "table") then
+				return us
+			end
+		elseif (r == nil) then
+			return v
+		end
+	end
+	if (#c == 0) then
+		if (pPlan.e > 1) then
+			pPlan.e = pPlan.e - 1
+			if (pPlan.e < 1) then
+				pPlan.e = 1
+			end
+			change = true
+		end
+	end
+	if (change == true) then
+		for _,v in ipairs(pPlan.INCONS) do
+-- DQDebug.writeToLog("Adding " .. stateToString(v) .. " from INCONS to OPEN")		
+			addToOpen(pPlan, v)
+		end
+		pPlan.INCONS = {}
+		oldOpen = pPlan.OPEN_BY_KEY
+		pPlan.OPEN_BY_KEY = {}
+		pPlan.OPEN_BY_STATE = {}
+-- DQDebug.writeToLog("Reordering priority in OPEN")		
+		for _,v in ipairs(oldOpen) do
+			addToOpen(pPlan, v[1])
+		end
+		pPlan.CLOSED = {}
+-- DQDebug.dump(pPlan)
+		return computeOrImprovePath(pWorld, pPlan)
+	end
+end
+
+---------------------------------------
+-- Basic plan accessors
+---------------------------------------
+
+local function basicGetG(pPlan, pState)
+	local mem = pPlan.memory
+	for _,v in ipairs(pPlan.funcs.getAllStates(pState)) do
+		if (type(mem[v]) == "nil") then
+			mem[v] = {}
+		end
+		mem = mem[v]
+	end
+	if (type(mem.g) == "nil") then
+		return sINFINITE
+	else
+		return mem.g
+	end
+end
+
+local function basicGetRHS(pPlan, pState)
+	local mem = pPlan.memory
+	for _,v in ipairs(pPlan.funcs.getAllStates(pState)) do
+		if (type(mem[v]) == "nil") then
+			mem[v] = {}
+		end
+		mem = mem[v]
+	end
+	if (type(mem.rhs) == "nil") then
+		return sINFINITE
+	else
+		return mem.rhs
+	end
+end
+
+local function basicSetG(pPlan, pState, pValue)
+	local mem = pPlan.memory
+	for _,v in ipairs(pPlan.funcs.getAllStates(pState)) do
+		if (type(mem[v]) == "nil") then
+			mem[v] = {}
+		end
+		mem = mem[v]
+	end
+	if (mem.g ~= pValue) then
+		mem.g = pValue
+-- DQDebug.writeToLog("g(" .. stateToString(pState) .. ") = " .. tostring(pValue))
+	end
+end
+
+local function basicSetRHS(pPlan, pState, pValue)
+	local mem = pPlan.memory
+	for _,v in ipairs(pPlan.funcs.getAllStates(pState)) do
+		if (type(mem[v]) == "nil") then
+			mem[v] = {}
+		end
+		mem = mem[v]
+	end
+	if (mem.rhs ~= pValue) then
+		mem.rhs = pValue
+-- DQDebug.writeToLog("rhs(" .. stateToString(pState) .. ") = " .. tostring(pValue))
+	end
+end
+
+local function baseStateComparator(pPlan, pS1, pS2)
+	local s2 = pPlan.funcs.getAllStates(pS2)
+	for k,v in ipairs(pPlan.funcs.getAllStates(pS1)) do
+		if (v < s2[k]) then
+			return -1
+		elseif (v > s2[k]) then
+			return 1
+		end
+	end	
+	return 0
+end
+
+-- Returns the "Manhattan" distance between two states,
+-- 	which is simply the abs(x2-x1) + abs(y2-y1) + ...
+local function manhattanHeuristic(pWorld, pPlan, pS1, pS2)
+	local d1 = pPlan.funcs.getDimensionalStates(pS1)
+	local d2 = pPlan.funcs.getDimensionalStates(pS2)
+	local h = 0
+	for k,v in ipairs(d1) do
+		h = h + math.abs(v - d2[k])
+	end
+	return h * 10
+end
+
+-- Symmetrical means that if a state can go back to a predecessor, then the predecessor can go forward to a successor
+local function symmetricalPreds(pWorld, pPlan, pState)
+	local preds = {}
+	local dims = pPlan.funcs.getDimensionalStates(pState)
+	local adj = {}
+	for k=1,#dims do
+		adj[k] = dims[k]
+	end
+	for k=1,#dims do
+		adj[k] = adj[k] + 1
+		local s = pPlan.funcs.createState(adj)
+		local wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (type(wa) == "nil") then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(preds, s)
+		end
+		adj[k] = adj[k] - 2
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (type(wa) == "nil") then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(preds, s)
+		end
+		adj[k] = adj[k] + 1
+	end
+	return preds
+end
+
+-- Symmetrical means that if a state can go back to a predecessor, then the predecessor can go forward to a successor
+local function symmetricalSuccs(pWorld, pPlan, pState)
+	local succs = {}
+	local dims = pPlan.funcs.getDimensionalStates(pState)
+	local adj = {}
+	for k=1,#dims do
+		adj[k] = dims[k]
+	end
+	for k=1,#dims do
+		adj[k] = adj[k] + 1
+		local s = pPlan.funcs.createState(adj)
+		local wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(succs, s)
+		end
+		adj[k] = adj[k] - 2
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(succs, s)
+		end
+		adj[k] = adj[k] + 1
+	end
+	return succs
+end
+
+local function facingPreds(pWorld, pPlan, pState)
+	local r = {}
+	local dims = pPlan.funcs.getDimensionalStates(pState)
+	local f = #dims + 1
+	local adj = {}
+	for k,v in ipairs(pState) do
+		adj[k] = pState[k]
+	end
+	local s
+	local wa
+	-- North
+	if (pState[f] == 1) then
+		adj[f] = 2
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 4
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 1
+		adj[2] = adj[2] + 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[2] = adj[2] - 1
+	elseif (pState[f] == 2) then
+		-- East
+		adj[f] = 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 3
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 2
+		adj[1] = adj[1] - 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[1] = adj[1] + 1
+	elseif (pState[f] == 3) then
+		-- South
+		adj[f] = 2
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 4
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 3
+		adj[2] = adj[2] - 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[2] = adj[2] + 1
+	elseif (pState[f] == 4) then
+		-- West
+		adj[f] = 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 3
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 4
+		adj[1] = adj[1] + 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[1] = adj[1] - 1
+	end
+	-- 
+	if (#dims == 3) then
+		adj[3] = adj[3] + 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[3] = adj[3] - 2
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+	end
+	return r
+end
+
+local function facingSuccs(pWorld, pPlan, pState)
+	local r = {}
+	local dims = pPlan.funcs.getDimensionalStates(pState)
+	local f = #dims + 1
+	local adj = {}
+	for k,v in ipairs(pState) do
+		adj[k] = pState[k]
+	end
+	local s
+	local wa
+	-- North
+	if (pState[f] == 1) then
+		adj[f] = 2
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 4
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 1
+		adj[2] = adj[2] - 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[2] = adj[2] + 1
+	elseif (pState[f] == 2) then
+		-- East
+		adj[f] = 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 3
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 2
+		adj[1] = adj[1] + 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[1] = adj[1] - 1
+	elseif (pState[f] == 3) then
+		-- South
+		adj[f] = 2
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 4
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 3
+		adj[2] = adj[2] + 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[2] = adj[2] - 1
+	elseif (pState[f] == 4) then
+		-- West
+		adj[f] = 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 3
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[f] = 4
+		adj[1] = adj[1] - 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[1] = adj[1] + 1
+	end
+	-- 
+	if (#dims == 3) then
+		adj[3] = adj[3] + 1
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+		adj[3] = adj[3] - 2
+		s = pPlan.funcs.createState(adj)
+		wa = pPlan.funcs.isWorldAccessible(pWorld, pPlan, s)
+		if (wa == nil) then
+			return { needData = true, state = s }
+		elseif (wa == true) then
+			table.insert(r, s)
+		end
+	end
+	return r
+end
+
+local function symmetrical2DDiagonals(pWorld, pPlan, pState)
+	local r = {}
+	local dim = pPlan.funcs.getDimensionalStates(pState)
+	-- NW
+	local s = pPlan.funcs.createState( { dim[1] - 1, dim[2] - 1 } )
+	if (pPlan.funcs.isWorldAccessible(pWorld, pPlan, s) == true) then
+		table.insert(r, s)
+	end
+	-- N
+	s = pPlan.funcs.createState( { dim[1], dim[2] - 1 } )
+	if (pPlan.funcs.isWorldAccessible(pWorld, pPlan, s) == true) then
+		table.insert(r, s)
+	end
+	-- NE
+	s = pPlan.funcs.createState( { dim[1] + 1, dim[2] - 1 } )
+	if (pPlan.funcs.isWorldAccessible(pWorld, pPlan, s) == true) then
+		table.insert(r, s)
+	end
+	-- W
+	s = pPlan.funcs.createState( { dim[1] - 1, dim[2] } )
+	if (pPlan.funcs.isWorldAccessible(pWorld, pPlan, s) == true) then
+		table.insert(r, s)
+	end
+	-- E
+	s = pPlan.funcs.createState( { dim[1] + 1, dim[2] } )
+	if (pPlan.funcs.isWorldAccessible(pWorld, pPlan, s) == true) then
+		table.insert(r, s)
+	end
+	-- SW
+	s = pPlan.funcs.createState( { dim[1] - 1, dim[2] + 1 } )
+	if (pPlan.funcs.isWorldAccessible(pWorld, pPlan, s) == true) then
+		table.insert(r, s)
+	end
+	-- S
+	s = pPlan.funcs.createState( { dim[1], dim[2] + 1 } )
+	if (pPlan.funcs.isWorldAccessible(pWorld, pPlan, s) == true) then
+		table.insert(r, s)
+	end
+	-- SE
+	s = pPlan.funcs.createState( { dim[1] + 1, dim[2] + 1 } )
+	if (pPlan.funcs.isWorldAccessible(pWorld, pPlan, s) == true) then
+		table.insert(r, s)
+	end
+	return r
+end
+
+local function basicCompareState(pPlan, pS1, pS2)
+	local s2 = pPlan.funcs.getAllStates(pS2)
+	for k,v in ipairs(pPlan.funcs.getAllStates(pS1)) do
+		if (v ~= s2[k]) then
+			return false
+		end
+	end
+	return true
+end
+
+local function facingCost(pWorld, pPlan, pS1, pS2)
+	local h = manhattanHeuristic(pWorld, pPlan, pS1, pS2)
+	local dims = pPlan.funcs.getDimensionalStates(pS1)
+	local f = #dims + 1
+	local c = pS2[f] - pS1[f]
+	if (c < 0) then
+		c = c + 4
+	end
+	return f + (c * 10)
+end
+
+local function basicCost(pWorld, pPlan, pS1, pS2)
+	return manhattanHeuristic(pWorld, pPlan, pS1, pS2)
+end
+
+local function strange2DHeuristic(pWorld, pPlan, pS1, pS2)
+	return math.max(math.abs(pS1[1] - pS2[1]), math.abs(pS1[2] - pS2[2]))
+end
+
+local function diagonal2DCost(pWorld, pPlan, pS1, pS2)
+	if ((pS1[1] == pS2[1] - 1) and (pS1[2] == pS2[2] - 1)) then
+		return 1
+	elseif ((pS1[1] == pS2[1] + 1) and (pS1[2] == pS2[2] - 1)) then
+		return 1
+	elseif ((pS1[1] == pS2[1] - 1) and (pS1[2] == pS2[2] + 1)) then
+		return 1
+	elseif ((pS1[1] == pS2[1] + 1) and (pS1[2] == pS2[2] + 1)) then
+		return 1
+	else
+		return manhattanHeuristic(pWorld, pPlan, pS1, pS2)
+	end
+end
+
+local function getFromFacing3DWorld(pWorld, pPlan, pS)
+	if (type(pWorld["data"]) == "nil") then
+		logger:debug("Need data because world data is nil")	
+		return nil
+	end
+	local f,sx,sy = DQPos.getSegData(pS[1], pS[2], pS[3])
+	if (type(pWorld["segs"]) == "nil") then
+		logger:debug("Need data because world segs are null")
+		return nil
+	end
+	local k = tostring(f) .. "/" .. tostring(sx) .. "/" .. tostring(sy)
+	if (type(pWorld["segs"][k]) == "nil") then
+		logger:debug("Need data because world seg " .. k .." is null")
+		logger:debug("segs: %s", DQDebug.serialize1(pWorld.segs))
+		return nil
+	end
+	local w = pWorld.data
+	for _,v in ipairs(pPlan.funcs.getDimensionalStates(pS)) do
+		if (type(w[v]) == "table") then
+			w = w[v]
+		elseif (type(w[v]) == "nil") then
+			return true
+		else
+			if ((w[v] == DQPos.sInUse) or (w[v] == DQPos.sNeverBreak)) then
+-- DQDebug.writeToLog("Is blocked at " .. stateToString(pS))
+-- DQDebug.dump(pWorld.data, "World Data")
+				-- Special case, you can't be blocked at your starting location
+				if (pPlan.funcs.compareState(pPlan, pS, pPlan.SStart) == true) then
+					return true
+				else
+					return false
+				end
+			elseif (w[v] == DQPos.sUnknown) then
+				-- If you're not a miner, then you can't go through untouched areas, since you can't dig
+				if (sConfig.computer_type == "miner") then
+					return true
+				else
+					-- Special case, you can't be blocked at your starting location
+					if (pPlan.funcs.compareState(pPlan, pS, pPlan.SStart) == true) then
+						return true
+					else
+						return false
+					end
+				end
+			else
+				return true
+			end
+		end
+	end
+end
+
+function updateWorldFromSegInfo(pWorld, pPlan, pFloorNum, pSX, pSY, pStatus, pSegWorldInfo)
+	logger:debug("updateWorldFromSegInfo(pWorld, pPlan, %s, %s, %s, %s, %s)", DQDebug.serialize5(pFloorNum, pSX, pSY, pStatus, pSegWorldInfo))
+	local k = tostring(pFloorNum) .. "/" .. tostring(pSX) .. "/" .. tostring(pSY)
+	if (type(pWorld["segs"]) == "nil") then
+		pWorld["segs"] = {}
+	end
+	pWorld.segs[k] = {}
+	pWorld.segs[k].status = pStatus
+	pWorld.segs[k].update = os.clock()
+	
+	-- Update the world from the layered data
+	
+	if (type(pWorld["data"]) == "nil") then
+		pWorld["data"] = {}
+	end
+	
+	local segx1, segy1, segz1 = DQPos.getMinCoordsFromSeg(pFloorNum, pSX, pSY)
+
+	if (pSegWorldInfo == "") then
+		local s
+		if (pStatus == "Cleared") then
+			s = DQPos.sClear
+		elseif (pState == "Occupied") then
+			s = DQPos.sInUse
+		else
+			s = DQPos.sUnknown
+		end
+		for lz=1,10 do
+			for ly=1,8 do
+				for lx=1,8 do
+					updateWorldInfo(pWorld, { segx1 + lx - 1, segy1 + ly - 1, segz1 + lz - 1 }, s)
+				end
+			end
+		end
+	else
+		local w = DQPos.expandWorldData(pSegWorldInfo)
+		for lz=1,10 do
+			local wz = w[lz]
+			for ly=1,8 do
+				local wy = wz[ly]
+				for lx=1,8 do
+					updateWorldInfo(pWorld, { segx1 + lx - 1, segy1 + ly - 1, segz1 + lz - 1 }, wy[lx])
+				end
+			end
+		end
+	end
+	
+end
+
+function updateWorldInfo(pWorld, pDims, pValue)
+	if (type(pWorld["data"]) == "nil") then
+		pWorld["data"] = {}
+	end
+	local w = pWorld.data
+	local change = false
+	for k,v in ipairs(pDims) do
+		if (type(w[v]) == "table") then
+			w = w[v]
+		elseif ((type(w[v]) == "nil") and (k < #pDims)) then
+			w[v] = {}
+			w = w[v]
+			change = true
+		else
+			if (w[v] ~= pValue) then
+				change = true
+				w[v] = pValue
+			end
+		end
+	end
+	return change
+end
+
+function dumpWorld(pWorld, pPlan, pFileName, pFilePath)
+	local f = fs.open(pFilePath, "w")
+	local fragCount = 1
+	-- Determine the maximum range of the world
+	local minX = 99999
+	local minY = 99999
+	local minZ = 99999
+	local maxX = -99999
+	local maxY = -99999
+	local maxZ = -99999
+	for xk, xv in pairs(pWorld.data) do
+		minX = math.min(xk, minX)
+		maxX = math.max(xk, maxX)
+		for yk, yv in pairs(xv) do
+			minY = math.min(yk, minY)
+			maxY = math.max(yk, maxY)
+			for zk, zv in pairs(yv) do
+				minZ = math.min(zk, minZ)
+				maxZ = math.max(zk, maxZ)
+			end
+		end
+	end
+	
+	DQUtils.yield()
+	
+	logger:debug("Dump World %s Range: (%s, %s, %s) -> (%s, %s, %s)", DQDebug.serialize7(pFilePath, minX, minY, minZ, maxX, maxY, maxZ))
+	
+	f.writeLine("(" .. tostring(minX) .. ", " .. tostring(minY) .. ", " .. tostring(minZ) .. ") -> (" .. tostring(maxX) .. ", " .. tostring(maxY) .. ", " .. tostring(maxZ) .. ")")
+
+	local h = string.rep(" ", 6) .. "|"
+	local sep = string.rep(" ", 6) .. "-"
+	for x=minX,maxX do
+		local xs = tostring(x)
+		if (string.len(xs) < 5) then
+			h = h .. string.rep(" ", 5 - string.len(xs))
+		end
+		h = h .. " " .. xs .. " |"
+		sep = sep .. string.rep("-", 8)
+	end
+	
+	for z=minZ,maxZ do
+		f.writeLine("")
+		f.writeLine("Z = " .. tostring(z))
+		f.writeLine("")
+		f.writeLine(h)
+		f.writeLine(sep)
+		for y=minY,maxY do
+			local ys = tostring(y)
+			local r1 = string.rep(" ", 5 - string.len(ys)) .. ys .. " |"
+			local r2 = string.rep(" ", 6) .. "|"
+			DQUtils.yield()
+			
+			for x=minX,maxX do
+				if ((type(pWorld.data[x]) ~= "nil") and (type(pWorld.data[x][y]) ~= "nil") and (type(pWorld.data[x][y][z]) ~= "nil")) then
+					if (pWorld.data[x][y][z] == 0) then
+						r1 = r1 .. "0"
+					elseif (pWorld.data[x][y][z] == 1) then
+						r1 = r1 .. "X"
+					else
+						r1 = r1 .. "?"
+					end
+				else
+					r1 = r1 .. "."
+				end
+				r2 = r2 .. " "
+				if ((type(pPlan.memory) ~= "nil") and (type(pPlan.memory[x]) ~= "nil") and (type(pPlan.memory[x][y]) ~= "nil") and (type(pPlan.memory[x][y][z]) ~= "nil")) then
+					local m = pPlan.memory[x][y][z]
+					if (m.rhs == 999999) then
+						r1 = r1 .. "99999 |"
+					else
+						r1 = r1 .. string.rep(" ", 5 - string.len(tostring(m.rhs))) .. tostring(m.rhs) .. " |"
+					end
+					if (m.g == 999999) then
+						r2 = r2 .. "99999 |"
+					else
+						r2 = r2 .. string.rep(" ", 5 - string.len(tostring(m.g))) .. tostring(m.g) .. " |"
+					end
+				else
+					r1 = r1 .. string.rep(" ", 6) .. "|"
+					r2 = r2 .. string.rep(" ", 6) .. "|"
+				end
+			end
+			f.writeLine(r1)
+			f.writeLine(r2)
+			f.writeLine(sep)
+		end
+		f.close()
+		local space = fs.getFreeSpace("/")
+		if (space < 200000) then
+			-- Upload contents
+			f = fs.open(pFilePath, "r")
+			local s = f.readAll()
+			f.close()
+			local r = http.post("http://ravensview1318.mooo.com:3000/upload/" .. pFileName .. "_" .. tostring(fragCount) .. ".txt", s)
+			r.close()
+			fragCount = fragCount + 1
+			fs.delete(pFilePath)
+			f = fs.open(pFilePath, "w")
+		else
+			f = fs.open(pFilePath, "a")
+		end
+	end
+	f.close()
+	if (fragCount > 1) then
+		f = fs.open(pFilePath, "r")
+		local s = f.readAll()
+		f.close()
+		local r = http.post("http://ravensview1318.mooo.com:3000/upload/" .. pFileName .. "_" .. tostring(fragCount) .. ".txt", s)
+		r.close()
+		fs.delete(pFilePath)
+		f = fs.open(pFilePath, "w")
+		f.writeLine("Content auto uploaded due to size")
+		f.close()
+	end
+	-- DQDebug.dump(pPlan)
+	-- error("Dump")
+end
+
+function updateWorld(pWorld, pPlan, pS, pValue)
+	local dim = pPlan.funcs.getDimensionalStates(pS)
+	updateWorldInfo(pWorld, dim, pValue)
+	table.insert(pPlan.changes, pS)
+end
+
+---------------------------------------
+-- 2 dimensional states
+---------------------------------------
+
+local function getDimDimensionalStates(pState)
+	return pState
+end
+
+local function getDimAllStates(pState)
+	return pState
+end
+
+local function getFacing2DDimensionalStates(pState)
+	return { pState[1], pState[2] }
+end
+
+local function getFacing2DAllStates(pState)
+	return pState
+end
+
+local function getFacing3DDimensionalStates(pState)
+	return { pState[1], pState[2], pState[3] }
+end
+
+local function getFacing3DAllStates(pState)
+	if (type(pState) == "nil") then
+		return {}
+	else
+		return pState
+	end
+end
+
+function createState(pTable)
+	local s = {}
+	for k,v in ipairs(pTable) do
+		s[k] = v
+	end
+	return s
+end
+
+moveFuncs = {
+	g = basicGetG,
+	setG = basicSetG,
+	rhs = basicGetRHS,
+	setRHS = basicSetRHS,
+	h = manhattanHeuristic,
+	getAllStates = getFacing3DAllStates,
+	getDimensionalStates = getFacing3DDimensionalStates,
+	stateComparator = baseStateComparator,
+	pred = symmetricalPreds,
+	succ = symmetricalSuccs,
+	compareState = basicCompareState,
+	c = basicCost,
+	isWorldAccessible = getFromFacing3DWorld,
+	createState = createState
+}
+
+function setup(pTitle, pConfig, pEventHandlers)
+	sConfig = pConfig
+end

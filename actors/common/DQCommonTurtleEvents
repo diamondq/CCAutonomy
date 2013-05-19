@@ -1,0 +1,711 @@
+-- CommonActions
+
+local sProgramTitle = false
+local debug = true
+local sTimeout = 120
+
+local cteLogger = DQDebug.getDebugLogger("DQCommonTurtleEvents", debug)
+local ciLogger = DQDebug.getDebugLogger("DQCommonClearInventory", debug)
+local cliLogger = DQDebug.getDebugLogger("DQCommonLoadInventory", debug)
+local cmliLogger = DQDebug.getDebugLogger("DQCommonManualLoadInventory", debug)
+local cpLogger = DQDebug.getDebugLogger("DQCommonPark", debug)
+local cmmLogger = DQDebug.getDebugLogger("DQCommonMoveToMilestone", debug)
+
+local DQCTE = DQObject.class("DQCTE", ActorSystem.TypedActor)
+local DQCI = DQObject.class("DQCI", FiniteStateMachine.FSMActor)
+local DQCLI = DQObject.class("DQCLI", FiniteStateMachine.FSMActor)
+local DQP = DQObject.class("DQP", FiniteStateMachine.FSMActor)
+local DQMM = DQObject.class("DQMM", FiniteStateMachine.FSMActor)
+local DQCMLI = DQObject.class("DQCMLI", FiniteStateMachine.FSMActor)
+
+function DQCTE:preStart()
+	local rSelf = DQCTE:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.clearInv = ActorSystem.actorCreate(DQCI, "/InternalClearInventory")
+	rSelf.loadInv = ActorSystem.actorCreate(DQCLI, "/InternalLoadInventory")
+	rSelf.park = ActorSystem.actorCreate(DQP, "/InternalPark")
+	rSelf.moveToMilestone = ActorSystem.actorCreate(DQMM, "/InternalMoveToMilestone")
+	rSelf.manLoadInv = ActorSystem.actorCreate(DQCMLI, "/InternalManualLoadInventory")
+end
+
+function DQCTE:eventEmptyInventory(pMessage, pData)
+	cteLogger:debug("eventEmptyInventory(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCTE:cast(self)
+	rSelf.clearInv:tell("start", pData, rSelf:getSender())
+	return true
+end
+
+function DQCTE:eventLoadInventory(pMessage, pData)
+	cteLogger:debug("eventLoadInventory(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCTE:cast(self)
+	rSelf.loadInv:tell("start", pData, rSelf:getSender())
+	return true
+end
+
+function DQCTE:eventManualLoadInventory(pMessage, pData)
+	cteLogger:debug("eventManualLoadInventory(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCTE:cast(self)
+	rSelf.manLoadInv:tell("start", pData, rSelf:getSender())
+	return true
+end
+
+function DQCTE:eventPark(pMessage, pData)
+	cteLogger:debug("eventPark(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCTE:cast(self)
+	rSelf.park:tell("start", pData, rSelf:getSender())
+	return true
+end
+
+function DQCTE:eventMoveToNearestMilestone(pMessage, pData)
+	cteLogger:debug("eventMoveToNearestMilestone(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCTE:cast(self)
+	rSelf.moveToMilestone:tell("start", pData, rSelf:getSender())
+	return true
+end
+
+----------------------------------
+--- Park
+----------------------------------
+
+function DQP:preStart()
+	local rSelf = DQP:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.turtle = rSelf:getContext():actorFor("/Turtle")
+	rSelf.ms = rSelf:getContext():actorFor("@main:/Milestones")
+end
+
+function DQP:eventStart(pMessage, pData)
+	cpLogger:debug("eventStart(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQP:cast(self)
+	rSelf.sender = rSelf:getSender()
+	rSelf:setState("move")
+	return true
+end
+
+function DQP:onMove()
+	cpLogger:debug("onMove()")
+	local rSelf = DQP:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("moveToNearestMilestone", { type="parking" }, rSelf:getActorRef())
+	return true
+end
+
+function DQP:whenMoveEventMoveResult(pMessage, pData)
+	cpLogger:debug("whenMoveEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQP:cast(self)
+	if ((type(pData) == "table") and (pData[1] == true)) then
+		rSelf.sender:tell("parkResult", true, rSelf:getActorRef())
+	else
+		rSelf.sender:tell("parkResult", "Unable to park", rSelf:getActorRef())
+	end
+	return true
+end
+
+----------------------------------
+--- Move To Milestone
+----------------------------------
+
+function DQMM:preStart()
+	local rSelf = DQMM:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.turtle = rSelf:getContext():actorFor("/Turtle")
+	rSelf.ms = rSelf:getContext():actorFor("@main:/Milestones")
+end
+
+-- pData => { type="milestoneType" }
+function DQMM:eventStart(pMessage, pData)
+	cmmLogger:debug("eventStart(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMM:cast(self)
+	rSelf.sender = rSelf:getSender()
+	rSelf.mType = pData.type
+	rSelf:setState("getLocations")
+	return true
+end
+
+function DQMM:onGetLocations()
+	cmmLogger:debug("onGetLocations()")
+	local rSelf = DQMM:cast(self)
+	rSelf.ms:tell("lookupMilestones", { type=rSelf.mType }, rSelf:getActorRef())
+	return true
+end
+
+-- When the data arrives from the milestones system, iterate through the list and find the first
+-- available one
+function DQMM:whenGetLocationsEventLookupResult(pMessage, pData)
+	cmmLogger:debug("whenGetLocationsEventLookupResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMM:cast(self)
+	rSelf.locs = pData
+	if (#rSelf.locs == 0) then
+		rSelf.sender:tell("moveResult", {false, 1, "No registered milestones" }, rSelf:getActorRef())
+		return true
+	end
+	-- See if we're already at a given location
+	local gloc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" } )
+	gloc[1] = tonumber(gloc[1])
+	gloc[2] = tonumber(gloc[2])
+	gloc[3] = tonumber(gloc[3])
+	gloc[4] = tonumber(gloc[4])
+	rSelf.atLoc = false
+	rSelf.locOff = 1
+	for k,v in ipairs(rSelf.locs) do
+		if ((tonumber(v.loc[1]) == gloc[1]) and (tonumber(v.loc[2]) == gloc[2])
+			and (tonumber(v.loc[3]) == gloc[3])) then
+			rSelf.atLoc = true
+			rSelf.locOff = k
+			break
+		end
+	end
+	rSelf:setState("checkLocation")
+	return true
+end
+
+function DQMM:onCheckLocation()
+	cmmLogger:debug("onCheckLocation()")
+	local rSelf = DQMM:cast(self)
+	cmmLogger:debug("Checking status of %s #%s", DQDebug.serialize2(rSelf.mType, rSelf.locOff))
+	rSelf.ms:tell("getStatus", { type=rSelf.mType, id=rSelf.locs[rSelf.locOff].id }, rSelf:getActorRef())
+	return true
+end
+
+function DQMM:whenCheckLocationEventStatus(pMessage, pData)
+	cmmLogger:debug("whenCheckLocationEventStatus(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMM:cast(self)
+	if (pData.status == "available") then
+		rSelf.ms:tell("setStatus", { type=rSelf.mType, id=rSelf.locs[rSelf.locOff].id, status="inuse" }, rSelf:getActorRef())
+		return true
+	elseif ((pData.status == "inuse") and (rSelf.atLoc == true)) then
+		rSelf.ms:tell("setStatus", { type=rSelf.mType, id=rSelf.locs[rSelf.locOff].id, status="inuse" }, rSelf:getActorRef())
+		return true
+	end
+	rSelf.locOff = rSelf.locOff + 1
+	if (rSelf.locOff > #rSelf.locs) then
+		-- All spots are busy. Wait 30 seconds and try again
+		rSelf.locOff = 1
+		cmmLogger:debug("All spots are busy, waiting 30 seconds and trying again")
+		rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef(), 30)
+		return true
+	end
+	rSelf:setState("checkLocation")
+	return true
+end
+
+function DQMM:whenCheckLocationEventAck(pMessage, pData)
+	cmmLogger:debug("whenCheckLocationEventAck(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMM:cast(self)
+	rSelf:setState("moveToLoc")
+	return true
+end
+
+function DQMM:whenCheckLocationEventTick(pMessage, pData)
+	cmmLogger:debug("whenCheckLocationEventTick(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMM:cast(self)
+	rSelf:setState("checkLocation")
+	return true
+end
+
+function DQMM:onMoveToLoc()
+	cmmLogger:debug("onMoveToLoc()")
+	local rSelf = DQMM:cast(self)
+	local loc = rSelf.locs[rSelf.locOff].loc
+	local data = { x=tonumber(loc[1]), y=tonumber(loc[2]), z=tonumber(loc[3]), dir=tonumber(loc[4]) }
+	cmmLogger:debug("Moving to %s", DQDebug.serialize1(data))
+	rSelf:getContext():actorFor("/Mover"):tell("move", data, rSelf:getActorRef())
+	return true
+end
+
+function DQMM:whenMoveToLocEventMoveResult(pMessage, pData)
+	cmmLogger:debug("whenMoveToLocEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMM:cast(self)
+	if (pData == true) then
+		rSelf.turtle:tell("nextMoveSend", { target=rSelf.ms:getPath(), sender=rSelf:getActorRef():getPath(), message="setStatus", data={ type=rSelf.mType, id=rSelf.locs[rSelf.locOff].id, status="available" }}, rSelf:getActorRef())
+		rSelf.sender:tell("moveResult", { true, rSelf.locs[rSelf.locOff].f }, rSelf:getActorRef())
+		rSelf.locs = {}
+	else
+		cmmLogger:error("whenMoveToLocEventMoveResult %s", pData)
+		rSelf.ms:tell("setStatus", { type=rSelf.mType, id=rSelf.locs[rSelf.locOff].id, status="available" }, rSelf:getActorRef())
+		rSelf.sender:tell("moveResult", { false, 0, "Unable to move to inventory" }, rSelf:getActorRef())
+	end
+	return true
+end
+
+----------------------------------
+--- Clear Inventory
+----------------------------------
+
+function DQCI:preStart()
+	local rSelf = DQCI:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.turtle = rSelf:getContext():actorFor("/Turtle")
+	rSelf.ms = rSelf:getContext():actorFor("@main:/Milestones")
+	rSelf.inv = rSelf:getContext():actorFor("@main:/Inventory")
+end
+
+function DQCI:eventStart(pMessage, pData)
+	ciLogger:debug("eventStart(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	rSelf.sender = rSelf:getSender()
+	rSelf:setState("emptyInventory")
+	return true
+end
+
+function DQCI:onEmptyInventory()
+	ciLogger:debug("onEmptyInventory()")
+	local rSelf = DQCI:cast(self)
+	local hasInv = false
+	for s=1,16 do
+		local count = DQTurtle.getItemCount(s)
+		if (count > 0) then
+			hasInv = true
+			break
+		end
+	end
+	if (hasInv == true) then
+		rSelf:setState("moveToSorter")
+	else
+		rSelf:setState("finished")
+	end
+	return true
+end
+
+function DQCI:onFinished()
+	ciLogger:debug("onFinished()")
+	local rSelf = DQCI:cast(self)
+	rSelf.sender:tell("emptyInventoryResult", true, rSelf:getActorRef())
+	return true
+end
+
+function DQCI:onMoveToSorter()
+	ciLogger:debug("onMoveToSorter()")
+	local rSelf = DQCI:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("moveToNearestMilestone", { type="sorter" }, rSelf:getActorRef())
+	return true
+end
+
+function DQCI:whenMoveToSorterEventMoveResult(pMessage, pData)
+	ciLogger:debug("whenMoveToSorterEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	if (pData[1] == true) then
+		rSelf.invSlot = 1
+		rSelf.invDir = pData[2]
+		rSelf.afterClear = "sort"
+		rSelf:setState("clearInventory")
+	elseif ((pData[1] == false) and (tostring(pData[2]) == "1")) then
+		-- There is no sorter, so just find an emptyInventory chest
+		rSelf:setState("moveToInv")
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to move to inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCI:onSort()
+	ciLogger:debug("onSort()")
+	local rSelf = DQCI:cast(self)
+	local dir
+	if (rSelf.invDir == "u") then
+		dir = "top"
+	elseif (rSelf.invDir == "d") then
+		dir = "bottom"
+	elseif (rSelf.invDir == "f") then
+		dir = "front"
+	elseif (rSelf.invDir == "b") then
+		dir = "back"
+	elseif (rSelf.invDir == "l") then
+		dir = "left"
+	elseif (rSelf.invDir == "r") then
+		dir = "right"
+	end
+	sorter = peripheral.wrap(dir)
+	rSelf.invList = {}
+	for k=0,17 do
+		local i,c = sorter.get(k)
+		if (type(i) ~= "nil") then
+			table.insert(rSelf.invList, { i = i, c = c })
+		end
+	end
+	rSelf.invSlot = 1
+	rSelf.invData = {}
+	rSelf:setState("getFromSorter")
+	return true
+end
+
+function DQCI:onGetFromSorter()
+	ciLogger:debug("onGetFromSorter()")
+	local rSelf = DQCI:cast(self)
+	rSelf.turtle:tell("suck", { rSelf.invDir, rSelf.invSlot }, rSelf:getActorRef())
+	return true
+end
+
+function DQCI:whenGetFromSorterEventSuckResult(pMessage, pData)
+	ciLogger:debug("whenGetFromSorterEventSuckResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	if (pData == true) then
+		rSelf.invData[rSelf.invSlot] = rSelf.invList[rSelf.invSlot]
+		rSelf.invSlot = rSelf.invSlot + 1
+		-- ciLogger:debug("Slot: %s InvData: %s", DQDebug.serialize2(rSelf.invSlot, rSelf.invData))
+		if ((rSelf.invSlot > 14) or (rSelf.invSlot > #rSelf.invList)) then
+			rSelf.invSlot = 1
+			rSelf:setState("queryInvSystem")
+		else
+			rSelf:setState("getFromSorter")
+		end
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to retrieve from sorter", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCI:onQueryInvSystem()
+	ciLogger:debug("onQueryInvSystem()")
+	local rSelf = DQCI:cast(self)
+-- pData = { { i=item_id, c=count }, ... }
+	rSelf.inv:tell("suggestStorage", rSelf.invData, rSelf:getActorRef())
+	return true
+end
+
+function DQCI:whenQueryInvSystemEventSuggestStorageResult(pMessage, pData)
+	ciLogger:debug("whenQueryInvSystemEventSuggestStorageResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	if (type(pData) == "table") then
+-- result = { { { ci=chest_id, x=x, y=y, z=z, f=facing, d=dir, c=count }, .. }, ... }
+		rSelf.invSlot = 1
+		rSelf.subSlot = 1
+		rSelf.invStore = pData
+		rSelf:setState("moveToStorage")
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to get suggestions from inventory system", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCI:onMoveToStorage()
+	ciLogger:debug("onMoveToStorage()")
+	local rSelf = DQCI:cast(self)
+	local s = rSelf.invStore[rSelf.invSlot][rSelf.subSlot]
+	ciLogger:debug("Storage: %s", DQDebug.serialize1(s))
+	local data = { x=s.x, y=s.y, z=s.z, dir=s.f }
+	rSelf:getContext():actorFor("/Mover"):tell("move", data, rSelf:getActorRef())
+	return true
+end
+
+function DQCI:whenMoveToStorageEventMoveResult(pMessage, pData)
+	ciLogger:debug("whenMoveToInvEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	if (pData == true) then
+		-- Drop the item
+		rSelf.turtle:tell("drop", { rSelf.invStore[rSelf.invSlot][rSelf.subSlot].d, rSelf.invSlot, rSelf.invStore[rSelf.invSlot][rSelf.subSlot].c }, rSelf:getActorRef())
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to move to chest location", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCI:whenMoveToStorageEventDropResult(pMessage, pData)
+	ciLogger:debug("whenMoveToStorageEventDropResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	if (pData == true) then
+		rSelf.inv:tell("addToStorage", { ci=rSelf.invStore[rSelf.invSlot][rSelf.subSlot].ci, i=rSelf.invData[rSelf.invSlot].i, c=rSelf.invStore[rSelf.invSlot][rSelf.subSlot].c }, rSelf:getActorRef())
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to move to chest location", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCI:whenMoveToStorageEventAddToStorageResult(pMessage, pData)
+	ciLogger:debug("whenMoveToStorageEventAddToStorageResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	if (pData == true) then
+		rSelf.subSlot = rSelf.subSlot + 1
+		if (rSelf.subSlot > #rSelf.invStore[rSelf.invSlot]) then
+			rSelf.subSlot = 1
+			rSelf.invSlot = rSelf.invSlot + 1
+			if (rSelf.invSlot > #rSelf.invStore) then
+				rSelf:setState("finished")
+				return true
+			end
+		end
+		rSelf:setState("moveToStorage")
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to move to chest location", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCI:onMoveToInv()
+	ciLogger:debug("onMoveToInv()")
+	local rSelf = DQCI:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("moveToNearestMilestone", { type="emptyInventory" }, rSelf:getActorRef())
+	return true
+end
+
+function DQCI:whenMoveToInvEventMoveResult(pMessage, pData)
+	ciLogger:debug("whenMoveToInvEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	if ((type(pData) == "table") and (pData[1] == true)) then
+		rSelf.invSlot = 1
+		rSelf.invDir = pData[2]
+		rSelf.afterClear = "finished"
+		rSelf:setState("clearInventory")
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to move to inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCI:onClearInventory()
+	ciLogger:debug("onClearInventory()")
+	local rSelf = DQCI:cast(self)
+	local amount = DQTurtle.getItemCount(rSelf.invSlot)
+	while (amount == 0) do
+		rSelf.invSlot = rSelf.invSlot + 1
+		if (rSelf.invSlot > 16) then
+			rSelf:setState(rSelf.afterClear)
+			return true
+		end
+		amount = DQTurtle.getItemCount(rSelf.invSlot)
+	end
+	rSelf.turtle:tell("drop", { rSelf.invDir, rSelf.invSlot, amount }, rSelf:getActorRef())
+	return true
+end
+
+function DQCI:whenClearInventoryEventDropResult(pMessage, pData)
+	ciLogger:debug("whenClearInventoryEventDropResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCI:cast(self)
+	if (pData == true) then
+		rSelf:setState("clearInventory")
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to drop inventory into storage", rSelf:getActorRef())
+	end
+	return true
+end
+
+----------------------------------
+--- Load Inventory
+----------------------------------
+
+function DQCLI:preStart()
+	local rSelf = DQCLI:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.turtle = rSelf:getContext():actorFor("/Turtle")
+	rSelf.ms = rSelf:getContext():actorFor("@main:/Milestones")
+end
+
+function DQCLI:eventStart(pMessage, pData)
+	cliLogger:debug("eventStart(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCLI:cast(self)
+	rSelf.sender = rSelf:getSender()
+	rSelf.blocks = pData
+	rSelf.notEnough = false
+	rSelf:setState("moveToInv")
+	return true
+end
+
+function DQCLI:onFinished()
+	cliLogger:debug("onFinished()")
+	local rSelf = DQCLI:cast(self)
+	local r
+	if (rSelf.notEnough == true) then
+		r = false
+	else
+		r = true
+	end
+	rSelf.sender:tell("loadInventoryResult", r, rSelf:getActorRef())
+	return true
+end
+
+function DQCLI:onMoveToInv()
+	cliLogger:debug("onMoveToInv()")
+	local rSelf = DQCLI:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("moveToNearestMilestone", { type="loadInventory" }, rSelf:getActorRef())
+	return true
+end
+
+function DQCLI:whenMoveToInvEventMoveResult(pMessage, pData)
+	cliLogger:debug("whenMoveToInvEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCLI:cast(self)
+	if ((type(pData) == "table") and (pData[1] == true)) then
+		rSelf.invSlot = 1
+		rSelf.invDir = pData[2]
+		rSelf:setState("loadInventory")
+	else
+		rSelf.sender:tell("emptyInventoryResult", "Unable to move to inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCLI:onLoadInventory()
+	cliLogger:debug("onLoadInventory()")
+	local rSelf = DQCLI:cast(self)
+	local amount = DQTurtle.getItemCount(rSelf.invSlot)
+	while (amount >= rSelf.blocks[rSelf.invSlot].count) do
+		rSelf.invSlot = rSelf.invSlot + 1
+		if (rSelf.invSlot > #rSelf.blocks) then
+			rSelf:setState("finished")
+			return true
+		end
+		amount = DQTurtle.getItemCount(rSelf.invSlot)
+	end
+	local toLoad = rSelf.blocks[rSelf.invSlot].count - amount
+	if (rSelf.invDir == "?") then
+		-- There's no inventory retrieval system, so start a manual load
+		rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("manualLoadInventory", rSelf.blocks, rSelf:getActorRef())
+	else
+		rSelf:getContext():actorFor("/LogisticsManager"):tell("get", { name=rSelf.blocks[rSelf.invSlot].blockname,
+			amount=toLoad, slot=rSelf.invSlot }, rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCLI:whenLoadInventoryEventManualLoadInventoryResult(pMessage, pData)
+	cliLogger:debug("whenLoadInventoryEventManualLoadInventoryResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCLI:cast(self)
+	if (pData == true) then
+		rSelf:setState("finished")
+	else
+		rSelf.sender:tell("loadInventoryResult", "Unable to load inventory into storage", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DQCLI:whenLoadInventoryEventLogisticsResult(pMessage, pData)
+	cliLogger:debug("whenLoadInventoryEventLogisticsResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCLI:cast(self)
+	if (pData == true) then
+		rSelf:setState("loadInventory")
+	elseif (pData == false) then
+		rSelf.notEnough = true
+		rSelf:setState("loadInventory")
+	else
+		rSelf.sender:tell("loadInventoryResult", "Unable to load inventory into storage", rSelf:getActorRef())
+	end
+	return true
+end
+
+----------------------------------
+--- Manual Load Inventory
+----------------------------------
+
+function DQCMLI:preStart()
+	local rSelf = DQCMLI:cast(self)
+	rSelf.vsuper:preStart()
+end
+
+sAfterLoad = false
+sNeededInventory = {}
+
+local function getInv(pSlot, pRow)
+	if (type(sNeededInventory[pSlot]) == "nil") then
+		if (pRow == 1) then
+			return string.rep(" ", 7)
+		else
+			return string.rep(" ", 9)
+		end
+	else
+		local m = tostring(sNeededInventory[pSlot]["count"]) .. " " .. sNeededInventory[pSlot]["blockname"]
+		if (pRow == 1) then
+			m = string.sub(m, 1, 7) .. ""
+			if (string.len(m) < 7) then
+				m = m .. string.rep(" ", 7 - string.len(m))
+			end
+		else
+			m = string.sub(m, 8, 16)
+			if (string.len(m) < 9) then
+				m = m .. string.rep(" ", 9 - string.len(m))
+			end
+		end
+		return m
+	end
+end
+
+local function onInvCharPressed(pChar)
+	if ((pChar == "R") or (pChar == "r")) then
+		for k,v in ipairs(sNeededInventory) do
+			local c = DQTurtle.getItemCount(tonumber(k))
+			if (tonumber(c) < tonumber(v.count)) then
+				sStatusLine = "Slot " .. string.char(65 + k - 1) .. " still needs " .. (tonumber(v.count) - tonumber(c)) .. " " .. v.blockname
+				DQUI.refresh()
+				return
+			end
+		end
+		DQUI.popToTop()
+		sAfterLoad:tell("invLoaded", nil, nil)
+	else
+		local choice = string.byte(pChar, 1)
+		local slot
+		if ((choice >= 65) and (choice <= 78)) then
+			slot = choice - 65 + 1
+		elseif ((choice >= 97) and (choice <= 110)) then
+			slot = choice - 97 + 1
+		else
+			return
+		end
+		if (type(sNeededInventory[slot]) ~= "nil") then
+			sStatusLine = string.char(65 + slot - 1) .. " " .. tostring(sNeededInventory[slot]["count"]) .. " " .. sNeededInventory[slot]["blockname"]
+			DQUI.refresh()
+		end
+	end
+end
+
+local function drawInventoryLoad(pData, pContent, pCache, pStartLine)	
+	if (type(sStatusLine) == "string") then
+		DQUI.run("setCursorPos", 1, 2)
+		DQUI.run("write", sStatusLine)
+	end
+	DQUI.run("setCursorPos", 1, 3)
+	DQUI.run("write", "A " .. getInv(1,1) .. "|B " .. getInv(2, 1) .. "|C " .. getInv(3,1) .. "|D " .. getInv(4,1))
+	DQUI.run("setCursorPos", 1, 4)
+	DQUI.run("write", getInv(1,2) .. "|" .. getInv(2, 2) .. "|" .. getInv(3,2) .. "|" .. getInv(4,2))
+	DQUI.run("setCursorPos", 1, 5)
+	DQUI.run("write", string.rep("-", pCache.sw))
+	DQUI.run("setCursorPos", 1, 6)
+	DQUI.run("write", "E " .. getInv(5,1) .. "|F " .. getInv(6, 1) .. "|G " .. getInv(7,1) .. "|H " .. getInv(8,1))
+	DQUI.run("setCursorPos", 1, 7)
+	DQUI.run("write", getInv(5,2) .. "|" .. getInv(6, 2) .. "|" .. getInv(7,2) .. "|" .. getInv(8,2))
+	DQUI.run("setCursorPos", 1, 8)
+	DQUI.run("write", string.rep("-", pCache.sw))
+	DQUI.run("setCursorPos", 1, 9)
+	DQUI.run("write", "I " .. getInv(9,1) .. "|J " .. getInv(10, 1) .. "|K " .. getInv(11,1) .. "|L " .. getInv(12,1))
+	DQUI.run("setCursorPos", 1, 10)
+	DQUI.run("write", getInv(9,2) .. "|" .. getInv(10, 2) .. "|" .. getInv(11,2) .. "|" .. getInv(12,2))
+	DQUI.run("setCursorPos", 1, 11)
+	DQUI.run("write", string.rep("-", pCache.sw))
+	DQUI.run("setCursorPos", 1, 12)
+	DQUI.run("write", "M " .. getInv(13,1) .. "|N " .. getInv(14, 1) .. "| Please load and")
+	DQUI.run("setCursorPos", 1, 13)
+	DQUI.run("write", getInv(13,2) .. "|" .. getInv(14, 2) .. "| hit R when done")
+	pContent.on_char = onInvCharPressed
+end
+
+function DQCMLI:eventStart(pMessage, pData)
+	cmliLogger:debug("eventStart(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCMLI:cast(self)
+	rSelf.sender = rSelf:getSender()
+	sNeededInventory = pData
+	sAfterLoad = rSelf:getActorRef()
+	rSelf:setState("waiting")
+	DQUI.displayDialog( { title=sProgramTitle, type="custom", draw=drawInventoryLoad } )
+	DQUI.refresh()
+	return true
+end
+
+function DQCMLI:onWaiting()
+	return true
+end
+
+function DQCMLI:whenWaitingEventInvLoaded(pMessage, pData)
+	cmliLogger:debug("whenWaitingEventInvLoaded(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQCMLI:cast(self)
+	rSelf:setState("finished")
+	return true
+end
+
+function DQCMLI:onFinished()
+	cmliLogger:debug("onFinished()")
+	local rSelf = DQCMLI:cast(self)
+	rSelf.sender:tell("manualLoadInventoryResult", true, rSelf:getActorRef())
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	sProgramTitle = pTitle
+	ActorSystem.actorCreate(DQCTE, "/CommonTurtleEvents")
+end

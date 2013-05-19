@@ -1,0 +1,8 @@
+{ info={ name="Level 1", addon="base" },
+  blocks={ { name="flooring1", type="base-flooring", blockname="Cobblestone" }, { name="pillar", type="base-flooring", blockname="Cobblestone" } },
+  actions= {
+  { type="place", block="pillar", x=5, y=5, z=4, td="u", tf="E" },
+  { type="place", block="pillar", x=6, y=5, z=4, td="u", tf="E" },
+  { type="place-cube", block="flooring1", x1=1, x2=8, y1=1, y2=8, z1=3,z2=3, td="u", tf="E" }
+} }
+

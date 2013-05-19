@@ -1,0 +1,1116 @@
+-- DQUI
+-- { title="DiamondQ Minecraft v0.1",
+--	on_cleanup = { function, function, ... },
+-- 	type="list", upper="Upper instructions", list_instruction="List specific instruction",
+--			list_choices={ { label="Pickaxe (Mining)", u_type="miner" },  {label="Hoe (Farming)", u_type="farmer"} },
+--			on_complete = function, on_complete_data="abcd"
+--  type="field", upper="Upper instructions", field_instructions="Field specific instruction",
+--			on_complete = function, on_complete_data="abcd"
+--  type="timer", upper="Upper instructions", timer_length=30
+--			on_complete = function, on_complete_data="abcd"
+--  type="status", status = { { label="Turtle", key="key" }, { .. }, { .. } },
+--			issues = { { label="Turtle is out of fuel", u_type="fuel", on_fix=function } }
+--			panels = { { label="Network Status", on_draw=function } },
+--			on_complete = function, on_complete_data="abcd"
+--  }
+
+local debug = false
+local logger = DQDebug.getDebugLogger("DQUI", debug)
+			
+local content = {}
+local displays = {}
+local cache = {}
+local menus = { "UI_Status", "UI_Status" }
+local contentTree = {}
+local dialogsHandlers = {}
+local choiceHandlers = {}
+local panels = {}
+local topOptions = { }
+local waitingForRefresh = false
+local sLocked = true
+local sConfig = false
+programTitle = nil
+
+local function setupDisplays()
+	-- Clear the table (yes, this strange case is necessary)
+	local keys = {}
+	for k,v in pairs(displays) do
+		keys[k] = true
+	end
+	for k,v in pairs(keys) do
+		displays[k] = nil
+	end
+	
+	displays["console"] = {}
+	displays.console.obj = term
+	displays.console.active = true
+	displays.console.type = "console"
+	for k,v in pairs(rs.getSides()) do
+		if (peripheral.isPresent(v)) then
+			if (peripheral.getType(v) == "monitor") then
+				displays["monitor_" .. v] = {}
+				displays["monitor_" .. v].obj = peripheral.wrap(v)
+				displays["monitor_" .. v].type = "monitor"
+				displays["monitor_" .. v].side = v
+				displays["monitor_" .. v].active = true
+			end
+		end
+	end
+	
+	-- Get display information
+	
+	displays.console.width, displays.console.height = displays.console.obj.getSize()
+	cache.sw = displays.console.width
+	cache.sh = displays.console.height
+	for k,v in pairs(displays) do
+		if (k ~= "console") then
+			v.ranges = {}
+			for var=0.5,5,0.5 do
+				local rStr = string.format("%d", var * 10)
+				v.ranges[rStr] = {}
+				v.obj.setTextScale(var)
+				v.ranges[rStr].width, v.ranges[rStr].height = v.obj.getSize()
+				v.ranges[rStr].range = var
+-- print("Scale: " .. var .. " Width: " .. v.ranges[rStr].width .. " Height: " .. v.ranges[rStr].height)
+			end
+			
+			-- Which is the closest, but not smaller than the console
+			local smallW = 999
+			local smallH = 999
+			local range = 0.5
+			for k1,v1 in pairs(v.ranges) do
+				if ((v1.width < smallW) and (v1.width > cache.sw)
+					and (v1.height < smallH) and (v1.height > cache.sh)) then
+					smallW = v1.width
+					smallH = v1.height
+					range = v1.range
+				end
+			end
+			v.obj.setTextScale(range)
+			v.width, v.height = v.obj.getSize()
+		end
+	end
+end
+
+function setup(pProgramTitle, pConfig, pEventHandlers)
+	sConfig = pConfig
+	programTitle = pProgramTitle
+	table.insert(pEventHandlers, 1, handleEvent)
+	setupDisplays()
+	DQUI.registerDialogCallback(statusDialogs)
+	DQUI.addTopOption("Display dashboard", statusChoice, "status")
+	if (DQStore.get("main", "setup", "false") == "false") then
+		sLocked = false
+	end
+end
+
+function run(pCommand, pArg1, pArg2)
+	for k,v in pairs(displays) do
+		if (v.active == true) then
+			if (type(pArg1) == "nil") then
+				v.obj[pCommand]()
+			elseif (type(pArg2) == "nil") then
+				v.obj[pCommand](pArg1)
+			else
+				v.obj[pCommand](pArg1, pArg2)
+			end
+		end
+	end
+end
+
+function runOnce(pCommand)
+	for k,v in pairs(displays) do
+		if (v.active == true) then
+			return v.obj[pCommand]()
+		end
+	end
+	return nil
+end
+
+function deactivateMonitorMirror()
+	for k,v in pairs(displays) do
+		if (v.type == "monitor") then
+			v.active = false
+		end
+	end
+end
+
+function runMonitor(pCommand, pArg1, pArg2)
+	local r1, r2
+	for k,v in pairs(displays) do
+		if (v.type == "monitor") then
+			if (type(pArg1) == "nil") then
+				r1, r2 = v.obj[pCommand]()
+			elseif (type(pArg2) == "nil") then
+				r1, r2 = v.obj[pCommand](pArg1)
+			else
+				r1, r2 = v.obj[pCommand](pArg1, pArg2)
+			end
+		end
+	end
+	return r1, r2
+end
+
+function wordWrap(pMessage, pY, pFirstIndent, pNextIndent, pWriteMessage, pLineLength, pX)
+	if (type(pMessage) == "nil") then
+		return pY
+	end
+	if (type(pFirstIndent) == "nil") then
+		pFirstIndent = 0
+	end
+	if (type(pNextIndent) == "nil") then
+		pNextIndent = 0
+	end
+	if (type(pWriteMessage) == "nil") then
+		pWriteMessage = true
+	end
+	if (type(pLineLength) == "nil") then
+		pLineLength = cache.sw
+	end
+	if (type(pX) == "nil") then
+		pX = 1
+	end
+	
+	local partialMessage = ""
+	local partialLen = 0
+	for lineT in string.gmatch(pMessage, "[^\n]+") do
+		local line = lineT .. ""
+		for w,sp in string.gmatch(line, "(%S+)(%s*)") do
+			local newLen = string.len(w) + string.len(sp)
+			if (partialLen + newLen > pLineLength) then
+				if (pWriteMessage == true) then
+					run("setCursorPos", pX, pY)
+					run("write", partialMessage)
+				end
+				pY = pY + 1
+				partialMessage = string.rep(" ", pNextIndent) .. w .. sp
+				partialLen = pNextIndent + newLen
+			else
+				if (partialLen == 0) then
+					partialMessage = string.rep(" ", pFirstIndent) .. w .. sp
+					partialLen = pFirstIndent + newLen
+				else
+					partialMessage = partialMessage .. w .. sp
+					partialLen = partialLen + newLen + 1
+				end
+			end
+		end
+		if (partialLen > 0) then
+			if (pWriteMessage == true) then
+				run("setCursorPos", pX, pY)
+				run("write", partialMessage)
+			end
+			pY = pY + 1
+			partialMessage = string.rep(" ", pNextIndent)
+			partialLen = pNextIndent
+		end
+	end
+	return pY
+end
+
+function clearWindow()
+	for k,v in pairs(displays) do
+		if (v.active == true) then
+			local s = string.rep(" ", v.width)
+			for var=1,v.height do
+				v.obj.setCursorPos(1,var)
+				v.obj.write(s)
+			end
+		end
+	end
+end
+
+function refresh(pMergeRefreshes)
+	if ((waitingForRefresh == false) or (pMergeRefreshes == false)) then
+		waitingForRefresh = true
+		os.queueEvent("DQUI_Refresh")
+	end
+end
+
+function lockScreen()
+	if (type(sLockTimer) ~= "boolean") then
+		DQUtils.deregisterEventCallback("timer", lockScreen, sLockTimer)
+		sLockTimer = false
+	end
+	sLocked = true
+	os.pullEvent = os.pullEventRaw
+	pushMenu("UI_Status")
+end
+
+-- Used to reset the screenlock
+function recordUserAction()
+	if (sLocked == false) then
+		if (DQStore.get("main", "setup", "false") == "true") then
+			if (type(sLockTimer) == "boolean") then
+				DQUtils.deregisterEventCallback("timer", lockScreen, sLockTimer)
+				sLockTimer = false
+			end
+			local lockTime = 300
+			if (type(sConfig["lock_time"]) ~= "nil") then
+				lockTime = tonumber(sConfig["lock_time"])
+			end
+			sLockTimer = os.startTimer(lockTime)
+			DQUtils.registerEventCallback("timer", lockScreen, nil, sLockTimer)
+		end
+	end
+end
+
+function performRefresh()
+	if (type(content.on_refresh) == "function") then
+		content.on_refresh(content, sLocked)
+		return
+	end
+	clearWindow()
+	if (type(content.title) == "nil") then
+		print("No content assigned")
+		return
+	end
+	local y = 1
+	-- Display title bar
+	local nx = (cache.sw - string.len(content.title)) / 2
+	if (nx + string.len(content.title) > cache.sw - 11) then
+		nx = cache.sw - 11 - string.len(content.title)
+	end
+	run("setCursorPos", nx, y)
+	run("write", content.title)
+	y = y + 1
+	if ((type(turtle) == "table") and (type(DQTurtle) == "table")) then
+		local fl = DQTurtle.getFuelLevel()
+		run("setCursorPos", 3, 1)
+		run("write", tostring(fl))
+	end
+	if (sLocked == true) then
+		run("setCursorPos", cache.sw - 10, 1)
+		run("write", "LOCKED")
+	end
+	-- Handle the different types
+	if (content.type == "info") then
+		run("setCursorBlink", false)
+
+		-- Display upper information
+		if (type(content["upper"]) ~= nil) then
+			y = wordWrap(content.upper, y + 1)
+		end
+		y = cache.sh
+		local barMessage = "[B]ack"
+		wordWrap(barMessage, y)
+		content.on_char = info_callback
+	elseif (content.type == "list") then
+		run("setCursorBlink", false)
+
+		-- Display upper information
+		if (type(content["upper"]) ~= nil) then
+			y = wordWrap(content.upper, y + 1)
+		end
+		
+		-- Display list instructions
+		if (type(content["list_instruction"]) ~= nil) then
+			y = wordWrap(content.list_instruction, y + 1)
+		end
+
+		y = y + 1
+		
+		-- Calculate if the choices are going to exceed the screen height
+		local ty = y
+		if (type(content.list_paging) == "nil") then
+			content.list_paging = { first = 1, last = table.maxn(content.list_choices) }
+		end
+		
+		for var=content.list_paging.first,content.list_paging.last do
+			ty = wordWrap("1. " .. content.list_choices[var].label, ty, 5, 0, false)
+			if (ty > cache.sh - 1) then
+				content.list_paging.last = var - 1
+				break
+			end
+		end
+		-- Maximum of 9 entries
+		if (content.list_paging.last - content.list_paging.first > 8) then
+			content.list_paging.last = content.list_paging.first + 8
+		end
+		if (type(content.list_info) == "nil") then
+			content.list_info = {}
+		end
+		for var=content.list_paging.first,content.list_paging.last do
+			content.list_info[var] = { line = y }
+			y = wordWrap((var - content.list_paging.first + 1) .. ". " .. content.list_choices[var].label, y, 5)
+		end
+		y = cache.sh
+		local barMessage = "[1] .. [" .. (content.list_paging.last - content.list_paging.first + 1) .. "]"
+		if (content.list_paging.first > 1) then
+			barMessage = barMessage .. ", [P]rev"
+		end
+		if (content.list_paging.last ~= table.maxn(content.list_choices)) then
+			barMessage = barMessage .. ", [N]ext"
+		end
+		if (type(content.on_back) ~= "nil") then
+			barMessage = barMessage .. ", [B]ack"
+		end
+		wordWrap(barMessage, y)
+		content.on_char = list_callback
+	elseif (content.type == "field") then
+		-- Display upper information
+		if (type(content["upper"]) ~= nil) then
+			y = wordWrap(content.upper, y + 1)
+		end
+
+		-- Display field instructions
+		if (type(content["field_instructions"]) ~= nil) then
+			y = wordWrap(content.field_instructions, y + 1)
+		end
+		if (type(content.buffer) == "nil") then
+			content.buffer = ""
+		end
+
+		local barMessage = "[ENTER] to finish"
+		if (type(content.on_back) ~= "nil") then
+			barMessage = barMessage .. ", [<-] Back"
+		end
+		wordWrap(barMessage, cache.sh)
+		
+		if (type(content.lower) ~= "nil") then
+			ty = wordWrap(content.lower, 1, 0, 0, false)
+			wordWrap(content.lower, cache.sh - 1 - (ty - 1))
+		end
+		
+		run("setCursorPos", 1, y)
+		run("write", content.buffer)
+		run("setCursorBlink", true)
+		content.field_y = y
+		content.on_char = field_callback
+		content.on_key = field_key_callback
+	elseif (content.type == "status") then
+		run("setCursorBlink", false)
+		DQUI.run("setCursorPos", 1, 1)
+		DQUI.run("write", "|")
+		DQUI.run("setCursorPos", cache.sw, 1)
+		DQUI.run("write", "|")
+		DQUI.run("setCursorPos", 1, 2)
+		DQUI.run("write", string.rep('-', cache.sw))
+		y = 3
+		-- Status Bar
+		local bar
+		if (type(content.status) ~= "nil") then
+			bar = "| " .. content.status[1].label .. ": " .. string.sub(DQStore.get("status", content.status[1].key, ""), 1, 5)
+			local endBar = content.status[3].label .. ": " .. string.sub(DQStore.get("status", content.status[3].key, ""), 1, 5) .. " |"
+			local middleBar = content.status[2].label .. ": " .. string.sub(DQStore.get("status", content.status[2].key, ""), 1, 5)
+			if (type(content.registered_status_callback) == "nil") then
+				content.registered_status_callback = true
+				if (type(content.on_cleanup) == "nil") then
+					content.on_cleanup = {}
+				end
+				table.insert(content.on_cleanup, status_change_cleanup)
+				DQStore.registerChangeCallback("status", content.status[1].key, status_change_callback)
+				DQStore.registerChangeCallback("status", content.status[2].key, status_change_callback)
+				DQStore.registerChangeCallback("status", content.status[3].key, status_change_callback)
+				DQStore.registerChangeCallback("status", "issues", status_change_callback)
+			end
+			local mlspace = ((cache.sw - string.len(middleBar)) / 2) - string.len(bar)
+			local mrspace = cache.sw - string.len(bar) - mlspace - string.len(middleBar) - string.len(endBar)
+			bar = bar .. string.rep(" ", mlspace) .. middleBar .. string.rep(" ", mrspace) .. endBar
+			DQUI.run("setCursorPos", 1, y)
+			y = y + 1
+			DQUI.run("write", bar)
+		else
+			if (type(content.registered_status_callback) == "nil") then
+				content.registered_status_callback = true
+				if (type(content.on_cleanup) == "nil") then
+					content.on_cleanup = {}
+				end
+				table.insert(content.on_cleanup, status_change_cleanup)
+				DQStore.registerChangeCallback("status", "issues", status_change_callback)
+			end
+			-- DQUI.run("write", "|" .. string.rep(' ', cache.sw - 2) .. "|")
+		end
+		for var=y,cache.sh-1 do
+			DQUI.run("setCursorPos", 1, var)
+			DQUI.run("write", "|" .. string.rep(' ', cache.sw - 2) .. "|")
+		end
+		DQUI.run("setCursorPos", 1, cache.sh)
+		DQUI.run("write", string.rep('-', cache.sw))
+		DQUI.run("setCursorPos", 1, y + 3)
+		DQUI.run("write", string.rep('-', cache.sw))
+		-- Issues
+		local issues = DQStore.get("status", "issues", {})
+		if (#issues > 0) then
+			content.issue_start = 1
+			content.issue_end = math.min(#issues, 2)
+			for var=content.issue_start,content.issue_end do
+				local issue = issues[var]
+				bar = "     " .. var .. "." .. string.rep(" ", 3 - string.len("" .. var)) .. string.sub(issue.label, 1, cache.sw - 7)
+				DQUI.run("setCursorPos", 3, y + (var - content.issue_start))
+				DQUI.run("write", bar)
+			end
+		else
+			content.issue_start = -1
+			content.issue_end = -1
+		end
+		-- Command bar
+		if (type(content.current_panel) == "nil") then
+			content.current_panel = 1
+		end
+		bar = ""
+		if (content.current_panel < #content.panels) then
+			bar = bar .. "[N]ext, "
+		end
+		if (content.current_panel > 1) then
+			bar = bar .. "[P]rev, "
+		end
+		if (content.issue_start ~= -1) then
+			bar = bar .. "[" .. content.issue_start .. "] - [" .. content.issue_end .. "], "
+		end
+		if (type(content.cycling) == "nil") then
+			content.cycling = true
+		end
+		if (content.cycling == true) then
+			bar = bar .. "+"
+		end
+		bar = bar .. "[C]ycle, [M]enus"
+		DQUI.run("setCursorPos", 3, y + 2)
+		DQUI.run("write", bar)
+		-- Panel
+		bar = content.panels[content.current_panel].label
+		DQUI.run("setCursorPos", (cache.sw - string.len(bar)) / 2, y + 4)
+		DQUI.run("write", bar)
+		bar = content.current_panel .. " / " .. #content.panels
+		DQUI.run("setCursorPos", cache.sw - string.len(bar) - 1, y + 4)
+		DQUI.run("write", bar)
+		if (type(content.panels[content.current_panel].on_draw) == "function") then
+			content.panels[content.current_panel].on_draw(content, cache, y + 5)
+		end
+		if ((content.cycling == true) and (#content.panels > 1)) then
+			if (type(content.timer_countdown) == "nil") then
+				content.timer_countdown = 11
+			end
+			content.timer_timer = os.startTimer(1)
+			content.on_timer = status_cycle_callback
+		end
+		content.on_char = status_callback
+	elseif (content.type == "timer") then
+		-- Display upper information
+		if (type(content["upper"]) ~= nil) then
+			y = wordWrap(content.upper, y + 1)
+		end
+
+		run("setCursorBlink", false)
+		if (type(content.timer_countdown) == "nil") then
+			content.timer_countdown = content.timer_length
+		end
+		local timerMessage = content.timer_countdown .. " second"
+		if (content.timer_countdown > 1) then
+			timerMessage = timerMessage .. "s"
+		end
+		timerMessage = timerMessage .. " remaining"
+		local sp = (cache.sw - string.len(timerMessage)) / 2
+		run("setCursorPos", 1, cache.sh / 2)
+		run("write", string.rep(" ", sp) .. timerMessage)
+		content.timer_timer = os.startTimer(1)
+		content.on_timer = timer_callback
+	elseif (content.type == "custom") then
+		-- Display upper information
+		if (type(content["upper"]) ~= nil) then
+			y = wordWrap(content.upper, y + 1)
+		end
+		if (type(content.draw) == "function") then
+			content.draw(content.drawData, content, cache, y)
+		end
+	else
+		print("DQUI: Unknown content type")
+	end
+
+end
+
+function status_change_cleanup(pContent)
+	if (type(content.status) ~= "nil") then
+		DQStore.deregisterChangeCallback("status", content.status[1].key, status_change_callback)
+		DQStore.deregisterChangeCallback("status", content.status[2].key, status_change_callback)
+		DQStore.deregisterChangeCallback("status", content.status[3].key, status_change_callback)
+	end
+end
+
+function status_change_callback(pData, pKey, pOldValue, pValue)
+	refresh()
+end
+
+function panelRefresh(pPanelKey)
+	if (content.type ~= "status") then
+		return
+	end
+	if (type(content.current_panel) == "nil") then
+		return
+	end
+	if (panels[content.current_panel].panel_key == pPanelKey) then
+		refresh()
+	end
+end
+
+function status_callback(pChar)
+	recordUserAction()
+	if (sLocked == true) then
+		pushMenu("Unlock_UI")
+	else
+		if ((pChar == "p") or (pChar == "P")) then
+			if (content.current_panel > 1) then
+				content.current_panel = content.current_panel - 1
+				content.timer_countdown = nil
+				refresh()
+			end
+		elseif ((pChar == "n") or (pChar == "N")) then
+			if (content.current_panel < #content.panels) then
+				content.current_panel = content.current_panel + 1
+				content.timer_countdown = nil
+				refresh()
+			end
+		elseif ((pChar == "m") or (pChar == "M")) then
+			if (type(content.on_complete) == "function") then
+				local data = nil
+				if (type(content.on_complete_data) ~= "nil") then
+					data = content.on_complete_data
+				end
+				content.on_complete(content, "menu", data, menus[1])
+			end
+		elseif ((pChar == "c") or (pChar == "C")) then
+			if (content.cycling == true) then
+				content.cycling = false
+				content.on_timer = nil
+				content.timer_timer = nil
+				content.timer_countdown = nil
+			else
+				content.cycling = true
+			end
+			refresh()
+		elseif ((string.byte(pChar, 1) > 47) and (string.byte(pChar, 1) < 58)) then
+			local choice = string.byte(pChar, 1) - 48
+			if ((choice > 0) and (choice <= (content.issue_end - content.issue_start + 1))) then
+				-- Display the highlighted choice
+				local actualChoice = choice + content.issue_start - 1
+				run("setCursorPos", 3, 2 + choice)
+				run("write", "--->")
+				-- os.sleep(1)
+				local issues = DQStore.get("status", "issues")
+				local issue = issues[actualChoice]
+				callChoiceCallback(issue.on_fix, issue.on_fix_data, actualChoice)
+			end
+		end
+	end
+end
+
+function callChoiceCallback(pKey, pData, pChoice)
+	local data = nil
+	if (type(pData) ~= "nil") then
+		data = pData
+	end
+	if (type(pKey) == "function") then
+		pKey(content, pChoice, data, menus[1])
+	elseif (type(pKey) == "string") then
+		local f = choiceHandlers[pKey]
+		if (type(f) == "function") then
+			f(content, pChoice, data, menus[1])
+		end
+	end
+end
+
+function status_cycle_callback(pParam1)
+	if (pParam1 == content.timer_timer) then
+		content.timer_timer = nil
+		content.timer_countdown = content.timer_countdown - 1
+		if (content.timer_countdown <= 0) then
+			content.current_panel = content.current_panel + 1
+			content.timer_countdown = nil
+			if (content.current_panel > #content.panels) then
+				content.current_panel = 1
+			end
+			refresh()
+		else
+			local bar = string.format("%i", content.timer_countdown)
+			if (string.len(bar) < 2) then
+				bar = string.rep(" ", 2 - string.len(bar)) .. bar
+			end
+			run("setCursorPos", cache.sw - string.len(bar) - 1, 1)
+			run("write", bar)
+			content.timer_timer = os.startTimer(1)
+		end
+	end
+end
+
+function timer_callback(pParam1)
+	if (pParam1 == content.timer_timer) then
+		content.timer_timer = nil
+		content.timer_countdown = content.timer_countdown - 1
+		if (content.timer_countdown <= 0) then
+			if (type(content.on_complete) == "function") then
+				local data = nil
+				if (type(content.on_complete_data) ~= "nil") then
+					data = content.on_complete_data
+				end
+				content.on_complete(content, "TIMEOUT", data, menus[1])
+			end
+		else
+			refresh()
+		end
+	end
+end
+
+function field_key_callback(pCode)
+	recordUserAction()
+	if (pCode == 14) then -- backspace
+		if (string.len(content.buffer) > 0) then
+			content.buffer = string.sub(content.buffer, 1, string.len(content.buffer) - 1) .. ""
+			run("setCursorPos", 1, content.field_y)
+			run("clearLine")
+			run("write", content.buffer)
+		end
+	elseif (pCode == 28) then -- enter
+		local f
+		if (type(content.on_complete) == "function") then
+			f = content.on_complete
+		elseif (type(content.on_complete) == "string") then
+			f = choiceHandlers[content.on_complete]
+		else
+			f = nil
+		end
+		if (type(f) == "function") then
+			local data = nil
+			if (type(content.on_complete_data) ~= "nil") then
+				data = content.on_complete_data
+			end
+			f(content, content.buffer, data, menus[1])
+		end
+	elseif (pCode == 203) then -- left arrow
+		if (type(content.on_back) ~= "nil") then
+			local data = nil
+			if (type(content.on_complete_data) ~= "nil") then
+				data = content.on_complete_data
+			end
+			local f
+			if (type(content.on_complete) == "function") then
+				f = content.on_complete
+			elseif (type(content.on_complete) == "string") then
+				f = choiceHandlers[content.on_complete]
+			else
+				f = nil
+			end
+			if (type(f) == "function") then
+				f(content, content.on_back, data, menus[1])
+			end
+		end
+	end
+end
+
+function field_callback(pChar)
+	recordUserAction()
+	content.buffer = content.buffer .. pChar
+	run("setCursorPos", 1, content.field_y)
+	run("clearLine")
+	run("write", content.buffer)
+end
+
+function list_callback(pChar)
+	recordUserAction()
+	if ((pChar == "p") or (pChar == "P")) then
+		if (content.list_paging.first > 1) then
+			local highestY = 999
+			local highestVar = 0
+			for var=content.list_paging.first - 1, 1, -1 do
+				if (content.list_info[var].line < highestY) then
+					highestY = content.list_info[var].line
+					highestVar = var
+				else
+					break
+				end
+			end
+			content.list_paging.first = highestVar
+			content.list_paging.last = table.maxn(content.list_choices)
+			refresh()
+		end
+	elseif ((pChar == "n") or (pChar == "N")) then
+		if (content.list_paging.last ~= table.maxn(content.list_choices)) then
+			content.list_paging.first = content.list_paging.last + 1
+			content.list_paging.last = table.maxn(content.list_choices)
+			refresh()
+		end
+	elseif ((pChar == "b") or (pChar == "B")) then
+		if (type(content.on_back) ~= "nil") then
+			local f
+			if (type(content.on_complete) == "function") then
+				f = content.on_complete
+			elseif (type(content.on_complete) == "string") then
+				f = choiceHandlers[content.on_complete]
+			else
+				f = nil
+			end
+			if (type(f) == "function") then
+				local data = nil
+				if (type(content.on_complete_data) ~= "nil") then
+					data = content.on_complete_data
+				end
+				f(content, content.on_back, data, menus[1])
+			end
+		end
+	elseif ((string.byte(pChar, 1) > 47) and (string.byte(pChar, 1) < 58)) then
+		local choice = string.byte(pChar, 1) - 48
+		if ((choice > 0) and (choice <= (content.list_paging.last - content.list_paging.first + 1))) then
+			-- Display the highlighted choice
+			local actualChoice = choice + content.list_paging.first - 1
+			run("setCursorPos", 1, content.list_info[actualChoice].line)
+			run("write", "--->")
+			-- os.sleep(1)
+			local f
+			if (type(content.on_complete) == "function") then
+				f = content.on_complete
+			elseif (type(content.on_complete) == "string") then
+				f = choiceHandlers[content.on_complete]
+			else
+				f = nil
+			end
+			if (type(f) == "function") then
+				local data = nil
+				if (type(content.on_complete_data) ~= "nil") then
+					data = content.on_complete_data
+				end
+				f(content, actualChoice, data, menus[1])
+			end
+		end
+	end
+end
+
+function info_callback(pChar)
+	recordUserAction()
+	if ((pChar == "b") or (pChar == "B")) then
+		local f
+		if (type(content.on_complete) == "function") then
+			f = content.on_complete
+		elseif (type(content.on_complete) == "string") then
+			f = choiceHandlers[content.on_complete]
+		else
+			f = nil
+		end
+		if (type(f) == "function") then
+			local data = nil
+			if (type(content.on_complete_data) ~= "nil") then
+				data = content.on_complete_data
+			end
+			f(content, "BACK", data, menus[1])
+		end
+	end
+end
+
+function cleanupContent(pContent)
+	if (type(pContent) ~= "nil") then
+		if (type(pContent.on_cleanup) == "table") then
+			for _,v in ipairs(pContent.on_cleanup) do
+				v(pContent)
+			end
+		end
+	end
+end
+
+function displayDialog(pContents)
+	content = pContents
+	contentTree[1] = pContents
+end
+
+
+function handleEvent(pEvent, pParam1, pParam2, pParam3)
+	if (pEvent == "char") then
+		if (type(content.on_char) == "function") then
+			content.on_char(pParam1)
+		end
+	elseif (pEvent == "key") then
+		if (type(content.on_key) == "function") then
+			content.on_key(pParam1)
+		end
+	elseif (pEvent == "timer") then
+		if (type(content.on_timer) == "function") then
+			content.on_timer(pParam1)
+		end
+	elseif (pEvent == "peripheral_detach") then
+		-- Was it one of our monitors?
+		for k,v in pairs(displays) do
+			if ((type(v.side) ~= "nil") and (v.side == pParam1)) then
+				setupDisplays()
+				refresh()
+				break
+			end
+		end
+	elseif (pEvent == "peripheral") then
+		if (peripheral.getType(pParam1) == "monitor") then
+			setupDisplays()
+			refresh()
+		end
+	elseif (pEvent == "DQUI_Refresh") then
+		waitingForRefresh = false
+		performRefresh()
+	end
+end
+
+function registerChoiceCallback(pChoiceKey, pChoiceFunction)
+	choiceHandlers[pChoiceKey] = pChoiceFunction
+end
+
+function registerDialogCallback(pFunction)
+	for k,v in pairs(dialogsHandlers) do
+		if (v == pFunction) then
+			return
+		end
+	end
+	table.insert(dialogsHandlers, pFunction)
+end
+
+function calculateNext()
+	logger:debug("Calculating next screen")
+	-- If we've already cached the content, then we don't need to recalculate
+	-- if (type(contentTree[1]) == "table") then
+	-- 	content = contentTree[1]
+	-- 	logger:debug("Already cached")
+	-- 	return
+	-- end
+	for _,v in ipairs(dialogsHandlers) do
+		if (v(menus[1]) == true) then
+			logger:debug("Handled %s", DQDebug.serialize1(menus[1]))
+			return
+		end
+	end
+	logger:debug("Nobody handled the menu %s", DQDebug.serialize1(menus[1]))
+end
+
+function pushMenu(pMenuKey)
+	table.insert(menus, 1, pMenuKey)
+	table.insert(contentTree, 1, false)
+	calculateNext()
+	refresh()
+end
+
+function popMenu()
+	table.remove(menus, 1)
+	if (type(contentTree[1]) == "table") then
+		cleanupContent(contentTree[1])
+	end
+	table.remove(contentTree, 1)
+	calculateNext()
+	refresh()
+end
+
+function popToTop()
+	while (#menus > 1) do
+		table.remove(menus, 1)
+		if (type(contentTree[1]) == "table") then
+			cleanupContent(contentTree[1])
+		end
+		table.remove(contentTree, 1)
+	end
+	calculateNext()
+	refresh()
+end
+
+function addIssue(pLabel, pFixKey, pFixData)
+-- DQDebug.writeToLog("Adding issue")
+	local issues = DQStore.get("status", "issues", {})
+	for _,v in ipairs(issues) do
+		if ((v.on_fix == pFixKey) and (v.on_fix_data == pFixData)) then
+			return
+		end
+	end
+	table.insert(issues, 1, { label=pLabel, on_fix=pFixKey, on_fix_data=pFixData } )
+	DQStore.store("status", "issues", issues)
+	refresh()
+end
+
+function addStatusPanel(pPanelKey, pPanelTitle, pDrawFunction)
+	local offset = 0
+	for k,v in ipairs(panels) do
+		if (v.panel_key == pPanelKey) then
+			offset = k
+			break
+		end
+	end
+	local panel = { label=pPanelTitle, on_draw=pDrawFunction, panel_key = pPanelKey }
+	if (offset == 0) then
+		table.insert(panels, panel)
+	else
+		panels[offset] = panel
+	end
+	refresh()
+end
+
+function addTopOption(pOptionLabel, pOptionFunction, pOptionData)
+	table.insert(topOptions, { label=pOptionLabel, on_choose=pOptionFunction, on_choose_data=pOptionData } )
+	refresh()
+end
+
+function removeIssue(pFixKey, pFixData)
+	local issues = DQStore.get("status", "issues", {})
+	local changed = false
+	for k,v in ipairs(issues) do
+		if ((v.on_fix == pFixKey) and (v.on_fix_data == pFixData)) then
+			table.remove(issues, k)
+			changed = true
+			break
+		end
+	end
+	if (changed == true) then
+		DQStore.store("status", "issues", issues)
+		refresh()
+	end
+end
+
+function hasIssue(pFixKey, pFixData)
+	local issues = DQStore.get("status", "issues", {})
+	for k,v in ipairs(issues) do
+		if ((v.on_fix == pFixKey) and (v.on_fix_data == pFixData)) then
+			return true
+		end
+	end
+	return false
+end
+
+function statusChoice(pContent, pChoice, pData, pMenuKey)
+	if (pMenuKey == "UI_Status") then
+		DQUI.pushMenu("UI_TopLevel")
+	elseif (pMenuKey == "UI_TopLevel") then
+		if (pChoice == "BACK") then
+			DQUI.popToTop()
+		else
+			local choice = topOptions[pChoice]
+-- DQDebug.dump(choice, "Choice")			
+			if (choice.on_choose == statusChoice) then
+				DQUI.popToTop()
+			else
+				local data = nil
+				if (type(choice.on_choose_data) ~= "nil") then
+					data = choice.on_choose_data
+				end
+				choice.on_choose(content, pChoice, data, pMenuKey)
+			end
+		end
+	end
+end
+
+local function unlockUI(pContent, pLocked)
+	clearWindow()
+	local ty = (cache.sh - 10) / 2
+	local tx = math.max((cache.sw - 35) / 2, 1)
+	pContent.tx = tx
+	run("setCursorPos", tx, ty)
+	run("write", string.rep('-', 35))
+	run("setCursorPos", tx, ty + 1)
+	run("write", "|" .. string.rep(' ', 33) .. "|")
+
+	run("setCursorPos", tx, ty + 2)
+	run("write", "| To unlock this terminal, please |")
+	run("setCursorPos", tx, ty + 3)
+	run("write", "| log in:                         |")
+
+	run("setCursorPos", tx, ty + 4)
+	run("write", "|" .. string.rep(' ', 33) .. "|")
+
+	if (pContent.panel == 1) then
+		run("setCursorPos", tx, ty + 5)
+		run("write", "| User name:                      |")
+	else
+		run("setCursorPos", tx, ty + 5)
+		run("write", "| Password:                       |")
+	end
+	run("setCursorBlink", true)
+	run("setCursorPos", tx, ty + 6)
+	run("write", "|" .. string.rep(' ', 33) .. "|")
+	
+	run("setCursorPos", tx + 2, ty + 6)
+	run("write", pContent.dbuffer)
+
+	run("setCursorPos", tx, ty + 7)
+	run("write", "|" .. string.rep(' ', 33) .. "|")
+
+	run("setCursorPos", tx, ty + 8)
+	run("write", "| [Enter] to finish, [<-] Back    |")
+
+	run("setCursorPos", tx, ty + 9)
+	run("write", string.rep('-', 35))
+
+	run("setCursorPos", tx + 2 + string.len(content.dbuffer), ty + 6)
+	
+	pContent.field_y = ty + 6
+	pContent.on_char = login_callback
+	pContent.on_key = login_key_callback
+end
+
+function passwordCheck(pContent)
+	if (pContent.password == "masque") then
+		sLocked = false
+		if (type(sConfig.pullEvent) == "function") then
+			os.pullEvent = sConfig.pullEvent
+		end
+		popMenu()
+		popMenu()
+	end
+end
+
+function login_key_callback(pCode)
+	if (pCode == 14) then -- backspace
+		if (string.len(content.buffer) > 0) then
+			content.buffer = string.sub(content.buffer, 1, string.len(content.buffer) - 1) .. ""
+			content.dbuffer = string.sub(content.dbuffer, 1, string.len(content.dbuffer) - 1) .. ""
+			run("setCursorPos", content.tx, content.field_y)
+			run("clearLine")
+			run("write", "|" .. string.rep(' ', 33) .. "|")
+			run("setCursorPos", content.tx + 2, content.field_y)
+			run("write", content.dbuffer)
+		end
+	elseif (pCode == 28) then -- enter
+		if (content.panel == 1) then
+			content.panel = 2
+			content.name = content.buffer
+			content.buffer = ""
+			content.dbuffer = ""
+			refresh()
+		else
+			-- Check password
+			-- content.panel = 3
+			content.password = content.buffer
+			refresh()
+			-- Temp
+			passwordCheck(content)
+		end
+	elseif (pCode == 203) then -- left arrow
+		if (content.panel == 1) then
+			popMenu()
+			refresh()
+		else
+			content.panel = 1
+			content.buffer = ""
+			content.dbuffer = ""
+			refresh()
+		end
+	end
+end
+
+function login_callback(pChar)
+	content.buffer = content.buffer .. pChar
+	if (content.panel == 2) then
+		content.dbuffer = content.dbuffer .. "*"
+	else
+		content.dbuffer = content.buffer
+	end
+	run("setCursorPos", content.tx, content.field_y)
+	run("clearLine")
+	run("write", "|" .. string.rep(' ', 33) .. "|")
+	run("setCursorPos", content.tx + 2, content.field_y)
+	run("write", content.dbuffer)
+end
+
+function statusDialogs(pMenuKey)
+	if (pMenuKey == "UI_Status") then
+		DQUI.displayDialog( { title=programTitle, type="status", panels=panels, on_complete=statusChoice } )
+		return true
+	elseif (pMenuKey == "UI_TopLevel") then
+		DQUI.displayDialog( { title=programTitle, type="list", list_instruction="Choose an action:", list_choices=topOptions, on_complete = statusChoice, on_back="BACK" } )
+		return true
+	elseif (pMenuKey == "Unlock_UI") then
+		DQUI.displayDialog( { panel=1, on_refresh = unlockUI, buffer="", dbuffer="" } )
+		return true
+	end
+	return false
+end
+
+function getCache()
+	return cache
+end

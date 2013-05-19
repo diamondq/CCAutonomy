@@ -1,0 +1,224 @@
+-- ConstructionJob
+
+local debug = true
+local logger = DQDebug.getDebugLogger("ConstructionJob", debug)
+
+-- States (in rough order): { emptyInventory, loadInventory, getDetails, moveToSegment, placeColumn, emptyInventory }
+
+local ConstructionJob = DQObject.class("ConstructionJob", FiniteStateMachine.FSMActor)
+function ConstructionJob:preStart()
+	local rSelf = ConstructionJob:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.turtle = rSelf:getContext():actorFor("/Turtle")
+end
+
+function ConstructionJob:whenStartingEventBegin(pMessage, pData)
+	logger:debug("whenStartingEventBegin(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = ConstructionJob:cast(self)
+	rSelf.location = pData.data.segKeys
+	rSelf.floorNum, rSelf.segX, rSelf.segY = DQPos.getSegDataFromPath(rSelf.location)
+	rSelf.plan = pData.data.plan
+	rSelf:setState("initialEmptyInventory")
+	rSelf:getContext():getParent():tell("ack", nil, rSelf:getActorRef())
+	return true
+end
+
+function ConstructionJob:onInitialEmptyInventory()
+	logger:debug("onInitialEmptyInventory()")
+	local rSelf = ConstructionJob:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("emptyInventory", nil, rSelf:getActorRef())
+	return true
+end
+
+function ConstructionJob:whenInitialEmptyInventoryEventEmptyInventoryResult(pMessage, pData)
+	logger:debug("whenInitialEmptyInventoryEventEmptyInventoryResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = ConstructionJob:cast(self)
+	if (pData == true) then
+		rSelf:setState("loadInventory")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to empty inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function ConstructionJob:onLoadInventory()
+	logger:debug("onLoadInventory()")
+	local rSelf = ConstructionJob:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("loadInventory", rSelf.plan.blocks, rSelf:getActorRef())
+	return true
+end
+
+function ConstructionJob:whenLoadInventoryEventLoadInventoryResult(pMessage, pData)
+	logger:debug("whenLoadInventoryEventLoadInventoryResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = ConstructionJob:cast(self)
+	if (pData == true) then
+		rSelf:setState("getDetails")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to empty inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+-- This action needs to issue a request to get the details about this segment
+function ConstructionJob:onGetDetails()
+	logger:debug("onGetDetails()")
+	local rSelf = ConstructionJob:cast(self)
+	rSelf:getContext():actorFor("/MainStore"):tell("get",
+		{ rSelf.location, { "status" } }, rSelf:getActorRef())
+	return true
+end
+
+-- When the data arrives from the store, make sure that we're still building this
+-- segment. If yes, then record the data
+function ConstructionJob:whenGetDetailsEventData(pMessage, pData)
+	logger:debug("whenGetDetailsEventData(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = ConstructionJob:cast(self)
+	-- Verify that the segment is still being cleared
+	if (pData[1] ~= "Constructing") then
+		rSelf:getContext():getParent():tell("cancelledJob", nil, rSelf:getActorRef())
+		return true
+	end
+	rSelf.actionCount = 0
+	DQDebug.dump(rSelf.plan, "Construction Plan")
+	rSelf:setState("performAction")
+	return true
+end
+
+function ConstructionJob:onPerformAction()
+	logger:debug("onPerformAction()")
+	local rSelf = ConstructionJob:cast(self)
+	rSelf.actionCount = rSelf.actionCount + 1
+	if (rSelf.actionCount > #rSelf.plan.actions) then
+		rSelf:setState("emptyInventory")
+		return true
+	end
+	local action = rSelf.plan.actions[rSelf.actionCount]
+	if (action.type == "place-cube") then
+		rSelf.cx = math.min(rSelf.plan.actions[rSelf.actionCount].x1, rSelf.plan.actions[rSelf.actionCount].x2) - 1
+		rSelf.cy = math.min(rSelf.plan.actions[rSelf.actionCount].y1, rSelf.plan.actions[rSelf.actionCount].y2)
+		rSelf.cz = math.min(rSelf.plan.actions[rSelf.actionCount].z1, rSelf.plan.actions[rSelf.actionCount].z2)
+		rSelf:setState("placeCube")
+	elseif (action.type == "place") then
+		rSelf.currentAction = rSelf.plan.actions[rSelf.actionCount]
+		rSelf.afterPlace = "performAction"
+		rSelf:setState("place")
+	elseif (action.type == "break") then
+		rSelf:setState("break")
+	elseif (action.type == "move") then
+		rSelf:setState("move")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unrecognized action " .. action.type, rSelf:getActorRef())
+	end
+	return true
+end
+
+function ConstructionJob:onPlaceCube()
+	logger:debug("onPlaceCube()")
+	local rSelf = ConstructionJob:cast(self)
+	local a = rSelf.plan.actions[rSelf.actionCount]
+	rSelf.cx = rSelf.cx + 1
+	if (rSelf.cx > math.max(a.x1, a.x2)) then
+		rSelf.cx = math.min(a.x1, a.x2)
+		rSelf.cy = rSelf.cy + 1
+		if (rSelf.cy > math.max(a.y1, a.y2)) then
+			rSelf.cy = math.min(a.y1, a.y2)
+			rSelf.cz = rSelf.cz + 1
+			if (rSelf.cz > math.max(a.z1, a.z2)) then
+				rSelf:setState("performAction")
+				return true
+			end
+		end
+	end
+	rSelf.currentAction = {
+		x = rSelf.cx, y = rSelf.cy, z = rSelf.cz,
+		tf = a.tf, td = a.td,
+		block = a.block
+	}
+	DQDebug.dump(rSelf.currentAction, "placeCube")
+	rSelf.afterPlace = "placeCube"
+	rSelf:setState("place")
+	return true
+end
+
+function ConstructionJob:onPlace()
+	logger:debug("onPlace()")
+	local rSelf = ConstructionJob:cast(self)
+	rSelf.x = rSelf.currentAction.x
+	rSelf.y = rSelf.currentAction.y
+	rSelf.z = rSelf.currentAction.z
+	rSelf.tx, rSelf.ty, rSelf.tz, rSelf.tf, rSelf.td = DQUtils.calculateTurtlePos(rSelf.currentAction.x, rSelf.currentAction.y, rSelf.currentAction.z, rSelf.currentAction.tx, rSelf.currentAction.ty, rSelf.currentAction.tz, rSelf.currentAction.tf, rSelf.currentAction.td)
+	rSelf.invSlot = -1
+	for k,v in ipairs(rSelf.plan.blocks) do
+		if (v.name == rSelf.currentAction.block) then
+			rSelf.invSlot = k
+			break
+		end
+	end	
+	logger:debug("place at (%s,%s,%s) f:%s d:%s i:%s", DQDebug.serialize6(rSelf.tX, rSelf.tY, rSelf.tZ, rSelf.tF, rSelf.tD, rSelf.invSlot))
+	rSelf:setState("moveAndPlace")
+	return true
+end
+
+function ConstructionJob:onMoveAndPlace()
+	logger:debug("onMoveAndPlace()")
+	local rSelf = ConstructionJob:cast(self)
+	local az = (rSelf.floorNum * 10) + rSelf.tZ - 1
+	local ax = (rSelf.segX * 8) + rSelf.tX - 1
+	local ay = (rSelf.segY * 8) + rSelf.tY - 1
+	-- Send a message to the mover to start the turtle moving in the right direction
+	rSelf:getContext():actorFor("/Mover"):tell("move", { x=ax, y=ay, z=az, dir=rSelf.tF }, rSelf:getActorRef())
+	return true
+end
+
+function ConstructionJob:whenMoveAndPlaceEventMoveResult(pMessage, pData)
+	logger:debug("whenMoveAndPlaceEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = ConstructionJob:cast(self)
+	if (pData == true) then
+		rSelf.turtle:tell("place", { rSelf.tD, rSelf.invSlot }, rSelf:getActorRef())
+	else
+		logger:error("whenMoveAndPlaceEventMoveResult %s", pData)
+		rSelf:getContext():getParent():tell("jobResult", "Unable to move to construction spot", rSelf:getActorRef())
+	end
+	return true
+end
+
+function ConstructionJob:whenMoveAndPlaceEventPlaceResult(pMessage, pData)
+	logger:debug("whenMoveAndPlaceEventPlaceResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = ConstructionJob:cast(self)
+	if (pData == true) then
+		rSelf:setState(rSelf.afterPlace)
+	else
+		logger:error("whenMoveAndPlaceEventPlaceResult %s", pData)
+		rSelf:getContext():getParent():tell("jobResult", "Unable to place item", rSelf:getActorRef())
+	end
+	return true
+end
+
+function ConstructionJob:onEmptyInventory()
+	logger:debug("onEmptyInventory()")
+	local rSelf = ConstructionJob:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("emptyInventory", nil, rSelf:getActorRef())
+	return true
+end
+
+function ConstructionJob:whenEmptyInventoryEventEmptyInventoryResult(pMessage, pData)
+	logger:debug("whenEmptyInventoryEventEmptyInventoryResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = ConstructionJob:cast(self)
+	if (pData == true) then
+		rSelf:setState("finished")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to empty inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function ConstructionJob:onFinished()
+	logger:debug("onFinished()")
+	local rSelf = ConstructionJob:cast(self)
+	rSelf:getContext():getParent():tell("jobResult", true, rSelf:getActorRef())
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	DQWorkerTurtle.addJob("construct", ConstructionJob)
+end

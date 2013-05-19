@@ -1,0 +1,100 @@
+-- FarmManager
+
+local config = {}
+
+local debug = true
+local logger = DQDebug.getDebugLogger("FarmManager", debug)
+local sFarmTime = 20 * 60
+
+local FarmManager = DQObject.class("FarmManager", ActorSystem.TypedActor)
+
+function FarmManager:preStart()
+	logger:debug("preStart()")
+	local rSelf = FarmManager:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.registry = rSelf:getContext():actorFor("/Registry")
+	rSelf.farms = {}
+	rSelf.working = {}
+	-- Watch for anything changing the status of a segment
+	DQStore.registerChangeCallback({ "bases", "base*", "floor*", "seg*"}, "status",
+		rSelf.class().static.informSegStatus, rSelf, true)
+end
+
+function FarmManager:issueJob(pSegKeys, pNamePrefix, pJobName, pData, pRequirements)
+	logger:debug("issueJob(%s, %s, %s, %s, %s)", DQDebug.serialize5(pSegKeys, pNamePrefix, pJobName, pData, pRequirements))
+	-- Pass a clear job to the job registry
+	local b = string.sub(pSegKeys[2], 5) .. ""
+	local f = string.sub(pSegKeys[3], 6) .. ""
+	local s = string.sub(pSegKeys[4], 4) .. ""
+	local n = b .. "/" .. f .. "/" .. s
+	local job = { id=n, job=pJobName, owner=self:getActorRef():getPath(), data=pData }
+	self.registry:tell("newJob", { owner=self:getActorRef():getPath(),
+		name=pNamePrefix .. " " .. n, id=textutils.serialize(pSegKeys), data=job, require=pRequirements }, self:getActorRef())
+end
+
+function FarmManager:informSegStatus(pKey1, pKey2, pOldValue, pNewValue)
+	local rSelf = FarmManager:cast(self)
+	if (pNewValue == "Occupied") then
+		local usage = DQStore.get(pKey1, "usage", nil)
+		if (usage == "DenseFarm") then
+			table.insert(rSelf.farms, { segKeys=pKey1 })
+			if (#rSelf.farms == 1) then
+				rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef())
+			end
+		end
+	elseif ((pOldValue == "Occupied") and (pNewValue ~= "Occupied")) then
+		local usage = DQStore.get(pKey1, "usage", nil)
+		if (usage == "DenseFarm") then
+			for k,v in ipairs(rSelf.farms) do
+				if ((v.segKeys[1] == pKey1[1]) and (v.segKeys[2] == pKey1[2])
+					and (v.segKeys[3] == pKey1[3]) and (v.segKeys[4] == pKey1[4])) then
+					table.remove(rSelf.farms, k)
+					break
+				end
+			end
+		end
+	end
+end
+
+function FarmManager:eventTick(pMessage, pData)
+	logger:debug("eventTick(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = FarmManager:cast(self)
+	-- For each farm, put a harvest job up
+	for _,v in ipairs(rSelf.farms) do
+		local process = false
+		if (type(v.last) == "nil") then
+			process = true
+		elseif (v.last + sFarmTime < os.clock()) then
+			process = true
+		end
+		if (process == true) then
+			v.last = os.clock()
+			rSelf:issueJob(v.segKeys, "Farm", "farm", v.segKeys, { type="farmer" })
+		end
+	end
+	return true
+end
+
+function FarmManager:eventJobStatus(pMessage, pData)
+	logger:debug("eventJobStatus(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = FarmManager:cast(self)
+	if (pData.status == "failed") then
+		rSelf.working[pData.id] = nil
+		return true
+	elseif (pData.status == "ack") then
+		local k = textutils.unserialize(pData.id)
+		rSelf.working[pData.id] = k
+		return true
+	elseif (pData.status == "working") then
+		return true
+	elseif (pData.status == "done") then
+		local k = textutils.unserialize(pData.id)
+		rSelf.working[pData.id] = nil
+		return true
+	end
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	config = pConfig
+	ActorSystem.actorCreate(FarmManager, "/FarmManager")
+end

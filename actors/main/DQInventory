@@ -1,0 +1,243 @@
+-- Inventory
+
+local debug = true
+local sTimeout = 120
+
+local logger = DQDebug.getDebugLogger("DQInventory", debug)
+local sMaximumCount = 10000
+
+local DQInv = DQObject.class("DQInventory", ActorSystem.TypedActor)
+function DQInv:preStart()
+	local rSelf = DQInv:cast(self)
+	rSelf.vsuper:preStart()
+end
+
+-- inv:itemRanges = { { l=lowerItemIdBound, u=upperItemIdBound, r=rangeId, c=count }, ... }
+-- inv:chestRanges = { { l=lowerChestIdBound, u=upperChestIdBound, r=rangeId, c=count }, .. }
+-- inv:chestCount = total count of chests (never decreases)
+-- inv/items(rangeId):itemId = { { ci=chestId, c=count, r=remaining }, ... }
+-- inv/chests(rangeId}:chestId = { ci=chestId, x=x, y=y, z=z, tx=x, ty=y, tz=z, tf=facing, td=dir, t=chestType, i=itemId }
+-- inv/segs/seg(FloorId}_(segX)_(segY):chests = { chestId, ... }
+-- inv/empties:empties = { chestId, ... }
+
+-- pType = item | chest
+local function lookupData(pType, pId)
+	local r = DQStore.get("inv", pType .. "Ranges", nil)
+	if (type(r) == "nil") then
+		r = { { l=0, u=999999999, r=1, c=0 } }
+		DQStore.store("inv", pType .. "Ranges", r)
+	end
+	local f = false
+	logger:debug("lookupData type=%s id=%s range=%s", DQDebug.serialize3(pType, pId, r))
+	for k,v in ipairs(r) do
+		if ((v.l <= pId) and (v.u >= pId)) then
+			f = v
+			break
+		end
+	end
+	if (f == false) then
+		error("Unable to find range of type " .. pType .. " for id: " .. pId)
+	end
+	local d = DQStore.get({ "inv", pType .. "s" .. tostring(f.r) }, pId, nil)
+	if (type(d) == "nil") then
+		-- Assign a new space
+		f.c = f.c + 1
+		if (f.c > sMaximumCount) then
+			error("We need to move the items between ranges")
+		end
+		DQStore.store("inv", pType .. "Ranges", r)
+		d = {}
+		DQStore.store({ "inv", pType .. "s" .. tostring(f.r) }, pId, d)
+	end
+	return d
+end
+
+local function updateData(pType, pId, pData)
+	local r = DQStore.get("inv", pType .. "Ranges", nil)
+	if (type(r) == "nil") then
+		r = { { l=0, u=999999999, r=1, c=0 } }
+		DQStore.store("inv", pType .. "Ranges", r)
+	end
+	local f = false
+	for k,v in ipairs(r) do
+		if ((v.l <= pId) and (v.u >= pId)) then
+			f = v
+			break
+		end
+	end
+	if (f == false) then
+		error("Unable to find range of type " .. pType .. " for id: " .. pId)
+	end
+	DQStore.store({ "inv", pType .. "s" .. tostring(f.r) }, pId, pData)
+end
+
+local function getStartSizeForChestType(pType)
+	if (pType == "w") then	
+		return 27
+	elseif (pType == "c") then
+		return 45
+	elseif (pType == "i") then
+		return 54
+	elseif (pType == "s") then
+		return 72
+	elseif (pType == "g") then
+		return 81
+	elseif (pType == "d") then
+		return 108
+	elseif (pType == "cr") then
+		return 108
+	elseif (pType == "o") then
+		return 108
+	else
+		error("Unknown chest type: " .. tostring(pType))
+	end
+end
+
+-- Suggest Storage
+-- pData = { { i=item_id, c=count }, ... }
+-- result = { { { ci=chest_id, x=x, y=y, z=z, f=facing, d=dir, c=count }, .. }, ... }
+function DQInv:eventSuggestStorage(pMessage, pData)
+	logger:debug("eventSuggestStorage(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQInv:cast(self)
+	local result = {}
+	for k,v in ipairs(pData) do
+		local itemData = lookupData("item", v.i)
+		local itemResult = {}
+		table.insert(result, itemResult)
+		-- See if there is any space there
+		while (v.c > 0) do
+			for k2,v2 in ipairs(itemData) do
+				if (v2.r > 0) then
+					local a = math.min(v2.r, v.c)
+					table.insert(itemResult, { ci=v2.ci, c=a })
+					v.c = v.c - a
+					if (v.c == 0) then
+						break
+					end
+					v2.r = v2.r - a
+					v2.c = v2.c + a
+				end
+			end
+			if (v.c == 0) then
+				break
+			end
+			-- We need a new chest
+			local empties = DQStore.get({ "inv", "empties" }, "empties", {})
+			if (#empties == 0) then
+				rSelf:getSender():tell("suggestStorageResult", "No available empties", rSelf:getActorRef())
+				return true
+			end
+			local newId = table.remove(empties, 1)
+			DQStore.store({ "inv", "empties" }, "empties", empties)
+			local chestData = lookupData("chest", newId)
+			chestData.i = v.i
+			updateData("chest", newId, chestData)
+			local startRemain = getStartSizeForChestType(chestData.t)
+			-- We reload the item data so that if we run into problems, at least the new chest id is stored
+			local tempItemData = lookupData("item", v.i)
+			table.insert(tempItemData, { ci=newId, c=0, r=startRemain })
+			updateData("item", v.i, tempItemData)
+			table.insert(itemData, { ci=newId, c=0, r=startRemain })
+		end
+		updateData("item", v.i, itemData)
+	end
+	-- Now enhance with chest data
+	for k,v in ipairs(result) do
+		for k2,v2 in ipairs(v) do
+			local c = lookupData("chest", v2.ci)
+			v2.x = c.tx
+			v2.y = c.ty
+			v2.z = c.tz
+			v2.f = c.tf
+			v2.d = c.td
+		end
+	end
+	-- Return
+	rSelf:getSender():tell("suggestStorageResult", result, rSelf:getActorRef())
+	return true
+end
+
+-- Add to storage
+-- pData = { ci=chest_id, i=item_id, c=count }
+-- result = ack
+function DQInv:eventAddToStorage(pMessage, pData)
+	logger:debug("eventAddToStorage(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQInv:cast(self)
+	
+	return true
+end
+
+-- Earmark
+-- pData = { items={ { i=item_id | name=name, c=count }, ... } [, data=data] [, onUnavailable={ wait=true, ref=ref } ] }
+-- result = { false, data, earmark_id }
+-- result = { false, data, { { i=item_id, c=count }, ... } }
+-- result = { true, data, earmark_id, { { { ci=chest_id, x=x, y=y, z=z, f=facing, d=dir, c=count, i=item_id }, ... }, ... } }
+ 
+-- Remove from storage
+-- pData = { ci=chest_id, i=item_id | name=name, ei=earmark_id}
+-- result = ack
+
+-- Cancel
+-- pData = { ei=earmark_id }
+-- result = ack 
+
+-- Create or Replace Storage
+-- pData = { x=x, y=y, z=z, tx=tx, ty=ty, tz=tz, tf=tf, td=td, t=t }
+-- result = ack
+function DQInv:eventCreateOrReplaceChest(pMessage, pData)
+	logger:debug("eventCreateOrReplaceChest(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQInv:cast(self)
+	local f,sx,sy = DQPos.getSegData(pData.x, pData.y, pData.z)
+	-- Look up the segment
+	local chestIds = DQStore.get({ "inv", "segs" .. tostring(f) .. "_" .. tostring(sx) .. "_" .. tostring(sy) }, "chests", {})
+	local found = false
+	local chestData
+	for _,v in ipairs(chestIds) do
+		chestData = lookupData("chest", v)
+		if ((chestData.x == pData.x) and (chestData.y == pData.y) and (chestData.z == pData.z)) then
+			found = true
+			break
+		end
+	end
+	if (found == true) then
+		if (chestData.t == pData.t) then
+			rSelf:getSender():tell("ack", true, rSelf:getActorRef())
+			return true
+		end
+		if (type(chestData.i) ~= "nil") then
+			-- The sizes are different
+			local newSize = getStartSizeForChestType(pData.t)
+			local oldSize = getStartSizeForChestType(chestData.t)
+			local items = lookupData("item", chestData.i)
+			for _,v2 in ipairs(items) do
+				if (v2.chestId == chestData.ci) then
+					v2.r = v2.r + (newSize - oldSize)
+					if (v2.r < 0) then
+						v2.r = 0
+					end
+					updateData("item", chestData.i, items)
+					break
+				end
+			end
+		end
+		chestData.t = pData.t
+		updateData("chest", chestData.ci, chestData)
+	else
+		-- No chest info found, so create a new one
+		local cc = DQStore.get("inv", "chestCount", 0)
+		cc = cc + 1
+		DQStore.store("inv", "chestCount", cc)
+		chestData = { ci=cc, x=pData.x, y=pData.y, z=pData.z, tx=pData.tx, ty=pData.ty, tz=pData.tz, tf=pData.tf, td=pData.td, t=pData.t }
+		updateData("chest", cc, chestData)
+		-- Add the to the empties
+		local empties = DQStore.get({ "inv", "empties" }, "empties", {})
+		table.insert(empties, cc)
+		DQStore.store({ "inv", "empties" }, "empties", empties)
+	end
+	rSelf:getSender():tell("ack", true, rSelf:getActorRef())
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	local r = ActorSystem.actorCreate(DQInv, "/Inventory")
+end

@@ -1,0 +1,94 @@
+local fsmDebug = false
+
+local logger = DQDebug.getDebugLogger("FSMActor", fsmDebug)
+
+TimeoutMessage = "FSM_StateTimeout"
+StartupEvent = "StartupEvent"
+
+FSMActor = DQObject.class("ActorContext", ActorSystem.ActorClass)
+
+function FSMActor:preStart()
+	logger:debug("[%s] preStart()", DQDebug.serialize1(self))
+	local rSelf = FSMActor:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.mState = "start"
+	rSelf.mTimerRegistered = false
+	rSelf.mStateChanged = false
+end
+
+function FSMActor:receive(pMessage, pData)
+	logger:debug("[%s] receive(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	local rSelf = FSMActor:cast(self)
+	local rBase = self.baseinst
+	
+	-- Figure out the when function call
+	
+	rSelf.mStateChanged = false
+	local origState = rSelf.mState
+	local whenFuncs = DQUtils.lookupFunction(rBase, "when", nil, rSelf.mState, pMessage)
+	logger:debug("calling %s (given %s and %s)", DQDebug.serialize3(whenFuncs, rSelf.mState, pMessage))
+	for _,v in ipairs(whenFuncs) do
+		local r = rBase[v](rBase, pMessage, pData)
+		if ((type(r) == "boolean") and (r == true)) then
+			break
+		end
+	end
+	
+	-- If the state changed, then run an transition
+	while (rSelf.mStateChanged == true) do
+		rSelf.mStateChanged = false
+		local onFuncs = DQUtils.lookupFunction(rBase, "on", origState, rSelf.mState)
+		logger:debug("calling %s (given %s -> %s)", DQDebug.serialize3(onFuncs, origState, rSelf.mState))
+		for _,v in ipairs(onFuncs) do
+			local r = rBase[v](rBase)
+			if ((type(r) == "boolean") and (r == true)) then
+				break
+			end
+		end
+		
+		-- See if there is a timeout for this state
+		
+		local timeout = rSelf:getStateTimeout(rSelf.mState)
+		if (timeout > 0) then
+			DQUtils.registerEventCallback("timer", rSelf.class().static.internalTimer, rSelf, os.startTimer(timeout))
+			rSelf.mTimerRegistered = true
+		end
+	end
+end
+
+function FSMActor:internalTimer(pEvent, pParam1, pParam2, pParam3)
+	-- Remove the timer registration
+	self.mTimerRegistered = false
+	DQUtils.deregisterEventCallback("timer", self.class().static.internalTimer, pParam1)
+	-- Send ourselves a message indicating a timeout
+	self:getContext():tell(FiniteStateMachine.TimeoutMessage, nil, self:getActorRef())
+end
+
+function FSMActor:getStateTimeout(pState)
+	return 0
+end
+
+function FSMActor:whenUnhandled(pMessage, pData)
+	local rSelf = FSMActor:cast(self)
+	logger:info("[%s] whenUnhandled(%s, %s) for state %s", DQDebug.serialize4(rSelf, pMessage, pData, rSelf.mState))
+end
+
+function FSMActor:onUnhandled()
+	local rSelf = FSMActor:cast(self)
+	logger:info("[%s] onUnhandled() for state %s", DQDebug.serialize2(rSelf, rSelf.mState))
+end
+
+function FSMActor:getState()
+	local rSelf = FSMActor:cast(self)
+	return rSelf.mState
+end
+
+function FSMActor:setState(pNewState)
+	logger:debug("[%s] setState(%s)", DQDebug.serialize2(self, pNewState))
+	local rSelf = FSMActor:cast(self)
+	rSelf.mState = pNewState
+	rSelf.mStateChanged = true
+end
+
+function FSMActor:setStateTimeout(pNewValue)
+end

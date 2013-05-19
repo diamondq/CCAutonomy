@@ -1,0 +1,314 @@
+-- DQQueueProcessor
+
+local debug = true
+
+local sUniqueID = 0
+local sTimeout = 300
+
+local logger = DQDebug.getDebugLogger("DQQueueProcessor", debug)
+
+DQQueueProcessor = DQObject.class("DQQueueProcessor", ActorSystem.TypedActor)
+function DQQueueProcessor:preStart()
+	local rSelf = DQQueueProcessor:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.childCount = 1
+	rSelf.childBaseName = "Child"
+	rSelf.childClass = nil
+	
+	rSelf.queue = {}
+	-- metadata {s_at = started_time, s = sender_ref}
+	rSelf.queueMeta = {}
+	
+	rSelf.concurrent = 1
+	
+	rSelf.current = {}
+	-- metadata {r = child_actor_ref, c_at = cancelled_timer_start, p_at = process_timer_start }
+	rSelf.currentMeta = {}
+	rSelf.currentKey = {}
+	
+	-- Set up a timer for every 30 seconds
+	rSelf.tickTimer = os.startTimer(30)
+	DQUtils.registerEventCallback("timer", rSelf.class().static.eventTimer, rSelf, rSelf.tickTimer)
+end
+
+----------------------------------------------------------------
+-- Public Events
+----------------------------------------------------------------
+
+-- The "add" event is called to add a new object (the data) to the processor
+-- Processing of this item occurs in a separate execution
+-- An ack is sent back on completion (regardless of whether it was actually added).
+function DQQueueProcessor:eventAdd(pMessage, pData)
+	logger:debug("[%s] eventAdd(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	local rSelf = DQQueueProcessor:cast(self)
+	
+	local w = rSelf:wrapData(pData)
+	
+	local r = rSelf:getActorRef()
+	
+	-- Check to see if we should add this item
+	if (rSelf:checkAdd(w) == true) then
+		if (#rSelf.queue == 0) then
+			-- Set up a timer for every 30 seconds
+			rSelf.tickTimer = os.startTimer(30)
+			DQUtils.registerEventCallback("timer", rSelf.class().static.eventTimer, rSelf, rSelf.tickTimer)
+		end
+	
+		-- Add the element to the queue
+		table.insert(rSelf.queue, w)
+		table.insert(rSelf.queueMeta, { s = rSelf:getSender() })
+	
+		-- Send ourselves a message to process it
+		r:tell("process", nil, r)
+	end
+	
+	-- Send the original sender an ack for this object
+	rSelf:getSender():tell("ack", rSelf:getParentID(w), r)
+	return true
+end
+
+-- The "remove" event is called to remove an object from being processed.
+-- If the object is currently being processed, then the processing is cancelled.
+function DQQueueProcessor:eventRemove(pMessage, pData)
+	logger:debug("[%s] eventRemove(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	local rSelf = DQQueueProcessor:cast(self)
+	
+	local w = rSelf:wrapData(pData)
+
+	-- Check to see if we're already processing this item
+	local offset = rSelf:findData(rSelf.current, w)
+	if (offset > 0) then
+		-- We are, so send it a cancel message (assuming we haven't already started to cancel)
+		if (type(rSelf.currentMeta[offset].c_at) == "nil") then
+			rSelf.currentMeta[offset].c_at = os.clock()
+			rSelf.currentMeta[offset].r:tell("cancel", rSelf:getChildID(w), rSelf:getActorRef())
+		end
+	else
+		-- Check to see if we're aware of this item.
+		offset = rSelf:findData(rSelf.queue, w)
+		if (offset > 0) then
+			-- We are, so remove it from the queue
+			table.remove(rSelf.queue, offset)
+			table.remove(rSelf.queueMeta, offset)
+		else
+			logger:debug("The item isn't being processed. Ignoring")
+		end
+		rSelf:getSender():tell("ack", rSelf:getParentID(w))
+	end
+	return true
+end
+
+-- The "ack" event is called after the child accepts the processing of a wrapped
+-- data OR it's called after the parent accepts the "done", "failed" or "cancelled" messages
+function DQQueueProcessor:eventChildAck(pMessage, pData)
+	logger:debug("[%s] eventChildAck(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	return true
+end
+function DQQueueProcessor:eventAck(pMessage, pData)
+	logger:debug("[%s] eventAck(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	return true
+end
+
+function DQQueueProcessor:eventFailed(pMessage, pData)
+	logger:debug("[%s] eventFailed(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	return true
+end
+function DQQueueProcessor:eventWorking(pMessage, pData)
+	logger:debug("[%s] eventWorking(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	return true
+end
+function DQQueueProcessor:eventDone(pMessage, pData)
+	logger:debug("[%s] eventDone(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	return true
+end
+function DQQueueProcessor:eventCancelled(pMessage, pData)
+	logger:debug("[%s] eventCancelled(%s, %s)", DQDebug.serialize3(self, pMessage, pData))
+	return true
+end
+
+----------------------------------------------------------------
+-- Virtual Methods
+----------------------------------------------------------------
+
+-- This method is called to wrap the data from the outside world into
+-- something that should be stored into the processor.
+function DQQueueProcessor:wrapData(pData)
+	return pData
+end
+DQQueueProcessor:virtual("wrapData")
+
+-- This method is called to compare two wrapped datas.
+-- The default is to use the low-level compare routine
+function DQQueueProcessor:compareData(pData1, pData2)
+	return DQUtils.compare(pData1, pData2)
+end
+DQQueueProcessor:virtual("compareData")
+
+-- This method is called to verify if the new object should be added. 
+-- It is passed the wrapped data
+-- The default behaviour is just to check if the object already exists in the
+-- queue. 
+-- It is meant to be overridden to perform a better comparison
+function DQQueueProcessor:checkAdd(pData)
+	logger:debug("[%s] checkAdd(%s)", DQDebug.serialize2(self, pData))
+	local rSelf = DQQueueProcessor:cast(self)
+	
+	if (rSelf:findData(rSelf.queue, pData) > 0) then
+		return false
+	end
+	
+	return true
+end
+DQQueueProcessor:virtual("checkAdd")
+
+-- This method is called to find a specific wrapped data within a list
+-- The default behavior is to just iterate through the list running
+-- the compare
+function DQQueueProcessor:findData(pTable, pData)
+	logger:debug("[%s] findData(..., %s)", DQDebug.serialize2(self, pData))
+	for k,v in ipairs(pTable) do
+		if (self:compareData(v, pData) == true) then
+			return k
+		end
+	end
+	return -1
+end
+DQQueueProcessor:virtual("findData")
+
+-- This method is called to return an object that represents
+-- this wrapped data to the caller
+-- The default is to return the whole data
+function DQQueueProcessor:getParentID(pData)
+	return pData
+end
+DQQueueProcessor:virtual("getParentID")
+
+-- This method is called to return an object that represents
+-- this wrapped data to the child
+-- The default is to return the whole data
+function DQQueueProcessor:getChildID(pData)
+	return pData
+end
+DQQueueProcessor:virtual("getChildID")
+
+-- This method is called to get or create the child actor
+-- that will handle this particular wrapped data
+-- The default is to create a new child with the defined name
+function DQQueueProcessor:getOrCreateChild(pData)
+	logger:debug("[%s] getOrCreateChild(%s)", DQDebug.serialize2(self, pData))
+	local rSelf = DQQueueProcessor:cast(self)
+	local cn = rSelf:getChildActorName(pData)
+	if (type(rSelf.childClass) ~= "table") then
+		error("Child class not defined")
+	end
+	return rSelf:getContext():actorCreate(rSelf.childClass, cn)
+end
+DQQueueProcessor:virtual("getOrCreateChild")
+
+-- This method is called to generate a child actor name
+-- for the wrapped data
+-- The default is to use the base name + a unique id
+function DQQueueProcessor:getChildActorName(pData)
+	logger:debug("[%s] getChildActorName(%s)", DQDebug.serialize2(self, pData))
+	local rSelf = DQQueueProcessor:cast(self)
+	local n = tostring(rSelf.childCount)
+	rSelf.childCount = rSelf.childCount + 1
+	return rSelf.childBaseName .. n
+end
+DQQueueProcessor:virtual("getChildActorName")
+
+----------------------------------------------------------------
+-- Protected APIs
+----------------------------------------------------------------
+
+function DQQueueProcessor:setChildClass(pClass)
+	local rSelf = DQQueueProcessor:cast(self)
+	rSelf.childClass = pClass
+end
+
+----------------------------------------------------------------
+-- Internals
+----------------------------------------------------------------
+-- This internal event is called to see if there is anything that
+-- can be processed
+function DQQueueProcessor:eventProcess()
+	logger:debug("[%s] eventProcess()", DQDebug.serialize1(self))
+	local rSelf = DQQueueProcessor:cast(self)
+
+	local madeChange = true
+	while ((madeChange == true) and (#rSelf.current < rSelf.concurrent)) do
+		madeChange = false
+		-- See if there is an element on the queue that can be processed
+		for k,v in ipairs(rSelf.queueMeta) do
+			if (type(v.s_at) == "nil") then
+				v.s_at = os.clock()
+				table.insert(rSelf.current, rSelf.queue[k])
+				table.insert(rSelf.currentMeta, {})
+				local o = #rSelf.currentMeta
+				rSelf.currentKey[rSelf:getChildID(rSelf.queue[k])] = o
+				
+				-- Now get or create a child actor to process this
+				local r = rSelf:getOrCreateChild(rSelf.queue[k])
+				rSelf.currentMeta[o].r = r
+				-- Now inform the child to process this
+				rSelf.currentMeta[o].p_at = os.clock()
+				r:tell("process", rSelf.queue[k], rSelf:getActorRef())
+				madeChange = true
+				break
+			end
+		end
+	end
+	return true
+end
+
+function DQQueueProcessor:failCurrent(pCurrentKey)
+	logger:debug("[%s] failCurrent(%s)", DQDebug.serialize2(self, pCurrentKey))
+	local rSelf = DQQueueProcessor:cast(self)
+
+	local w = rSelf.current[pCurrentKey]
+	-- Remove the item from the current
+	table.remove(rSelf.current, pCurrentKey)
+	table.remove(rSelf.currentMeta, pCurrentKey)
+	
+	-- Find and remove from the queue
+	local offset = rSelf:findData(rSelf.queue, w)
+	if (offset > 0) then
+		local s = rSelf.queueMeta[offset].s
+		
+		-- We are, so remove it from the queue
+		table.remove(rSelf.queue, offset)
+		table.remove(rSelf.queueMeta, offset)
+		
+		-- Send a failed to the parent
+		s:tell("failed", rSelf:getParentID(w), rSelf:getActorRef())
+	end
+	
+end
+
+-- This internal event is called every 30 seconds to check all the events
+-- to see if anything has timed out, and respond appropriately.
+function DQQueueProcessor:eventTimer()
+	logger:debug("[%s] eventTimer()", DQDebug.serialize1(self))
+	local rSelf = DQQueueProcessor:cast(self)
+	DQUtils.deregisterEventCallback("timer", rSelf.class().static.eventTimer, rSelf.tickTimer)
+	
+	-- Check to see if any child was started but didn't respond
+	for k,v in ipairs(rSelf.currentMeta) do
+		if ((type(v.p_at) ~= "nil") and (v.p_at < (os.clock() - sTimeout))) then
+			-- The child creation didn't respond with an acknowledgement within the timeout window
+			rSelf:failCurrent(k)
+		end
+	end
+
+	-- Should we be triggering the process (in case, something got screwed up)?
+	if ((#rSelf.current < rSelf.concurrent) and (#rSelf.queue > #rSelf.current)) then
+		rSelf:getActorRef():tell("process", nil, rSelf:getActorRef())
+	end
+	
+	if (#rSelf.queue > 0) then
+		-- Set up a timer for every 30 seconds
+		rSelf.tickTimer = os.startTimer(30)
+		DQUtils.registerEventCallback("timer", rSelf.class().static.eventTimer, rSelf, rSelf.tickTimer)
+	end
+	return true
+end

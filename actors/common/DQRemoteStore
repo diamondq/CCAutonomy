@@ -1,0 +1,61 @@
+local debug = false
+local logger = DQDebug.getDebugLogger("DQRemoteStore", debug)
+
+local DQRemoteStore = DQObject.class("DQRemoteStore", ActorSystem.TypedActor)
+function DQRemoteStore:preStart()
+	local rSelf = DQRemoteStore:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.pending = {}
+	rSelf.pendingID = 0
+	DQStore.registerRemote("segs", rSelf.class().static.retrieveData, rSelf)
+	DQStore.registerRemote("main", rSelf.class().static.retrieveData, rSelf)
+	DQNet.registerMessageCallback("segChange", rSelf.class().static.segDataChange, rSelf)
+end
+
+function DQRemoteStore:eventGet(pMessage, pData)
+	logger:debug("eventGet(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQRemoteStore:cast(self)
+	local s = rSelf:getSender()
+	DQStore.getAsync(pData[1], pData[2], pData[3], function(fSelf, pResults)
+		logger:debug("gotResults(%s)", DQDebug.serialize1(pResults))
+		s:tell("data", pResults, fSelf:getActorRef())
+	end, rSelf)
+	return true
+end
+
+function DQRemoteStore:retrieveData(pKey1, pKey2, pDefault, pFunc, pFuncData)
+	logger:debug("retrieveData(%s, %s, %s, f(), d)", DQDebug.serialize3(pKey1, pKey2, pDefault))
+	local rSelf = DQRemoteStore:cast(self)
+	rSelf.pendingID = rSelf.pendingID + 1
+	rSelf.pending[rSelf.pendingID] = { key1=pKey1, key2=pKey2, d=pDefault, f=pFunc, fd=pFuncData }
+	ActorSystem.actorFor("@main:/Store"):tell("getAll", { key1=pKey1, id=rSelf.pendingID }, rSelf:getActorRef())
+end
+
+function DQRemoteStore:segDataChange(pType, pMessage, pSenderID, pReplyTo, pInReplyTo, pComputer, pX, pY, pZ)
+	local data = textutils.unserialize(pMessage)
+	logger:debug("Segment %s changed, clearing internal data", DQDebug.serialize1(data))
+	DQStore.updateExpires(data, 0)
+end
+
+function DQRemoteStore:eventGetAllResult(pMessage, pData)
+	logger:debug("eventGetAllResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQRemoteStore:cast(self)
+	local p = rSelf.pending[pData.id]
+	rSelf.pending[pData.id] = nil
+	DQStore.updateExpires(p.key1, os.clock() + 300)
+	if (type(pData.data) == "table") then
+		DQStore.startTransaction()
+		for k,v in pairs(pData.data) do
+			DQStore.store(p.key1, k, v)
+		end
+		DQStore.commitTransaction()
+	end
+	
+	local r = DQStore.get(p.key1, p.key2, p.d)
+	p.f(p.fd, r)
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	ActorSystem.actorCreate(DQRemoteStore, "/MainStore")
+end

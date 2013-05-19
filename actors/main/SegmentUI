@@ -1,0 +1,303 @@
+-- SegmentUI
+
+local programTitle = nil
+local config = {}
+local editFloorID = false
+local editSegXID = false
+local editSegYID = false
+
+local debug = true
+local logger = DQDebug.getDebugLogger("SegmentUI", debug)
+
+local attempts = {{y=-1,n="North"},{x=1,n="East"},{y=1,n="South"},{x=-1,n="West"},{z=1,n="Up"},{z=-1,n="Down"}}
+
+local function handleChoices(pContent, pChoice, pData, pMenuKey)
+	logger:debug("handleChoices(pContent, %s, %s, %s)", DQDebug.serialize3(pChoice, pData, pMenuKey))
+	if (pMenuKey == "UI_TopLevel") then
+		if (pData == "ChooseFloor") then
+			DQUI.pushMenu("ChooseFloor")
+		end
+	elseif (pMenuKey == "ChooseFloor") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			editFloorID = pContent.list_choices[pChoice].u_type
+			DQUI.pushMenu("ChooseSegmentX")
+		end
+	elseif (pMenuKey == "ChooseSegmentX") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			editSegXID = pContent.list_choices[pChoice].u_type
+			DQUI.pushMenu("ChooseSegmentY")
+		end
+	elseif (pMenuKey == "ChooseSegmentY") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			editSegYID = pContent.list_choices[pChoice].u_type
+			DQUI.pushMenu("EditSegment")
+		end
+	elseif (pMenuKey == "EditSegment") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			local choice = pContent.list_choices[pChoice].u_type
+			if (choice == "edit_segment_usage") then
+				DQUI.pushMenu("ChooseSegmentUsage")
+			elseif (choice == "add_secondary_usage") then
+				DQUI.pushMenu("ChooseSecondaryUsage")
+			elseif (choice == "edit_secondary_usage") then
+				DQUI.pushMenu("EditSecondaryUsage")
+			elseif (choice == "edit_segment_status") then
+				DQUI.pushMenu("ChooseSegmentStatus")
+			elseif (choice == "set_segment_name") then
+				DQUI.pushMenu("SetSegmentName")
+			elseif (choice == "new_segment") then
+				DQUI.pushMenu("NewSegment")
+			end
+		end
+	elseif (pMenuKey == "NewSegment") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			local choice = pContent.list_choices[pChoice].u_type
+			local choiceNum = tonumber(string.sub(choice, 16))
+			logger:debug("NewSegment: %s %s", DQDebug.serialize2(choiceNum, choice))
+			local f,sx,sy = DQPos.getSegDataFromPath({ "segs", editFloorID, editSegXID, editSegYID })
+			local tf,tx,ty = f,sx,sy
+			local v = attempts[choiceNum]
+			if (type(v.x) == "number") then
+				tx = tx + v.x
+			end
+			if (type(v.y) == "number") then
+				ty = ty + v.y
+			end
+			if (type(v.z) == "number") then
+				tf = tf + v.z
+			end
+			DQStore.store({ "segs", "floor" .. tostring(tf), "segX" .. tostring(tx), "segY" .. tostring(ty) }, "status", "Untouched")
+			DQUI.popMenu()
+		end
+	elseif (pMenuKey == "SetSegmentName") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			DQStore.store({ "segs", editFloorID, editSegXID, editSegYID }, "name", pChoice)
+			DQUI.popMenu()
+		end
+	elseif (pMenuKey == "ChooseSegmentUsage") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			local choice = pContent.list_choices[pChoice].u_type
+			DQStore.store({ "segs", editFloorID, editSegXID, editSegYID }, "usages", { { id=choice, built=false } } )
+			DQUI.popMenu()
+		end
+	elseif (pMenuKey == "ChooseSecondaryUsage") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			local choice = pContent.list_choices[pChoice].u_type
+			local usages = DQStore.get({ "segs", editFloorID, editSegXID, editSegYID }, "usages")
+			table.insert(usages, { id=choice, built=false })
+			DQStore.store({ "segs", editFloorID, editSegXID, editSegYID }, "usages", usages)
+			DQUI.popMenu()
+		end
+	elseif (pMenuKey == "ChooseSegmentStatus") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			local choice = pContent.list_choices[pChoice].u_type
+			if (choice == "Occupied") then
+				-- We need to get the usage
+				local segUsage = DQStore.get( { "segs", editFloorID, editSegXID, editSegYID }, "usage", nil)
+				if (type(segUsage) ~= "nil") then
+					logger:debug("Occupied usage: " .. segUsage)
+					local usage = DQUsages.getUsageByID(segUsage)
+					local usageLine
+					if (type(usage) ~= "nil") then
+						local usageInst = usage:loadFromSegment(editBaseID, editFloorID, editSegID)
+						local plans = usageInst:getPlans()
+						if (#plans > 1) then
+							error("Only one plan supported currently")
+						end
+						for _,v in ipairs(plans) do
+							logger:debug("Getting processed plan: " .. v)
+							local plan = usageInst:getProcessedPlan(v)
+							logger:debug("World: " .. plan.world)
+							DQStore.store({ "segs", editFloorID, editSegXID, editSegYID }, "world", plan.world)
+						end
+					end
+				end
+			end
+			DQStore.store({ "segs", editFloorID, editSegXID, editSegYID }, "status", choice)
+			DQUI.popMenu()
+		end
+	end
+end
+
+local function handleDialogs(pMenuKey)
+	logger:debug("handleDialogs(%s)", DQDebug.serialize1(pMenuKey))
+	if (pMenuKey == "ChooseFloor") then
+		local choices = {}
+		local flist = DQStore.getChildren( { "segs" } )
+		for _,v in ipairs(flist) do
+			local n = string.sub(v, 6)
+			local label = "Floor " .. n
+			table.insert(choices, { label=label, u_type=v } )
+		end
+		DQUI.displayDialog( { title=programTitle, type="list", list_instruction="Choose", list_choices = choices, on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "ChooseSegmentX") then
+		local choices = {}
+		local slist = DQStore.getChildren( { "segs", editFloorID } )
+		for _,v in ipairs(slist) do
+			local n = tonumber(string.sub(v, 5))
+			local sx1 = n * 8
+			local sx2 = sx1 + 7
+			local label = "Seg X " .. tostring(n) .. " [" .. tostring(sx1) .. " -> " .. tostring(sx2) .. "]"
+			table.insert(choices, { label=label, u_type=v } )
+		end
+		DQUI.displayDialog( { title=programTitle, type="list", list_instruction="Choose", list_choices = choices, on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "ChooseSegmentY") then
+		local choices = {}
+		local slist = DQStore.getChildren( { "segs", editFloorID, editSegXID } )
+		for _,v in ipairs(slist) do
+			local data = DQStore.get( { "segs", editFloorID, editSegXID, v }, { "status", "name" }, { "Untouched", "" })
+			local n = string.sub(v, 5)
+			local sy1 = n * 8
+			local sy2 = sy1 + 7
+			local label = "Seg Y " .. tostring(n) .. " [" .. tostring(sy1) .. " -> " .. tostring(sy2) .. "] " .. data[1]
+			table.insert(choices, { label=label, u_type=v } )
+		end
+		DQUI.displayDialog( { title=programTitle, type="list", list_instruction="Choose", list_choices = choices, on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "EditSegment") then
+		local segName = DQStore.get( { "segs", editFloorID, editSegXID, editSegYID }, "name", nil)
+		local segStatus = DQStore.get( { "segs", editFloorID, editSegXID, editSegYID }, "status", nil)
+		local segUsages = DQStore.get( { "segs", editFloorID, editSegXID, editSegYID }, "usages", nil)
+		local sx = tonumber(string.sub(editSegXID, 5))
+		local sy = tonumber(string.sub(editSegYID, 5))
+		local f = tonumber(string.sub(editFloorID, 6))
+		local x1 = sx * 8
+		local x2 = x1 + 7
+		local y1 = sy * 8
+		local y2 = y1 + 7
+		local info = "Segment " .. tostring(f) .. "/" .. tostring(sx) .. "/" ..tostring(sy) .. " at (" .. tostring(x1) .. "," .. tostring(y1) .. ") to (" .. tostring(x2) .. "," .. tostring(y2) .. ")\n"
+		local nameLine = "Name: "
+		if (type(segName) == "nil") then
+			nameLine = nameLine .. "(UNNAMED)"
+		else
+			nameLine = nameLine .. segName
+		end
+		local statusLine = "Status: "
+		if (type(segStatus) == "nil") then
+			statusLine = statusLine .. "(UNKNOWN)"
+		else
+			statusLine = statusLine .. segStatus
+		end
+		local w = DQUI.getCache().sw
+		info = info .. nameLine .. string.rep(' ', w - string.len(nameLine) - string.len(statusLine) - 4) .. statusLine .. "\n"
+		local usageLine
+		if (type(segUsages) == "nil") then
+			usageLine = "Usage: (UNKNOWN)"
+		else
+			usageLine = "Usage: "
+			local first = true
+			for _,v in ipairs(segUsages) do
+				local usage = DQUsages.getUsageByID(v.id)
+				if (first == true) then
+					first = false
+				else
+					usageLine = usageLine .. ", "
+				end
+				if (type(usage) == "nil") then
+					usageLine = usageLine .. "(UNRECOGNIZED)"
+				else
+					usageLine = usageLine .. usage:getName()
+				end
+				if (v.built ~= true) then
+					usageLine = usageLine .. " [+]"
+				end
+			end
+		end
+		info = info .. usageLine
+		local choices = { { label = "Edit Primary Usage", u_type="edit_segment_usage" } }
+		if (type(segUsages) ~= "nil") then
+			table.insert(choices, { label = "Add Secondary Usage", u_type="add_secondary_usage" } )
+			if (#segUsages > 1) then
+				table.insert(choices, { label = "Edit Secondary Usage", u_type="edit_secondary_usage" } )
+			end
+		end
+		table.insert(choices, { label = "Edit Status", u_type="edit_segment_status" })
+		table.insert(choices, { label = "Set Segment Name", u_type="set_segment_name" })
+		table.insert(choices, { label = "Add New Segment", u_type="new_segment" })
+		DQUI.displayDialog( { title=programTitle, type="list", upper = info, list_instruction="Choose", list_choices=choices, on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "SetSegmentName") then
+		DQUI.displayDialog( { title=programTitle, upper="Define the name of this segment. This is used to make it easier to distinguish between the segments.",
+			type="field", field_instructions="Name:", on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "NewSegment") then
+		local choices = {}
+		local f,sx,sy = DQPos.getSegDataFromPath({ "segs", editFloorID, editSegXID, editSegYID })
+		for k,v in ipairs(attempts) do
+			local tf,tx,ty = f,sx,sy
+			if (type(v.x) == "number") then
+				tx = tx + v.x
+			end
+			if (type(v.y) == "number") then
+				ty = ty + v.y
+			end
+			if (type(v.z) == "number") then
+				tf = tf + v.z
+			end
+			local status = DQStore.get( { "segs", "floor" .. tostring(tf), "segX" .. tostring(tx), "segY" .. tostring(ty) }, "status", nil)
+			if (type(status) == "nil") then
+				table.insert(choices, { label=v.n, u_type="create_segment_" .. tostring(k) })
+			else
+				table.insert(choices, { label=v.n .. " [Exists]", u_type="skip" } )
+			end
+		end
+		DQUI.displayDialog( { title=programTitle, upper="Define the direction of the new segment.",
+			type="list", list_instruction="Choose:", list_choices=choices, on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "ChooseSegmentUsage") then
+		local choices = {}
+		local availUsages = DQUsages.getUsageIDsByName()
+		for k,v in pairs(availUsages) do
+			table.insert(choices, { label = k, u_type=v } )
+		end
+		DQUI.displayDialog( { title=programTitle, type="list", list_instruction="Choose", list_choices = choices, on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "ChooseSecondaryUsage") then
+		local choices = {}
+		local segUsages = DQStore.get( { "segs", editFloorID, editSegXID, editSegYID }, "usages", nil)
+		local availAddons = DQUsages.getAddonsByUsageID(segUsages[1].id)
+		for _,v in ipairs(availAddons) do
+			local usage = DQUsages.getUsageByID(v)
+			table.insert(choices, { label = usage:getName(), u_type=usage:getID() } )
+		end
+		DQUI.displayDialog( { title=programTitle, type="list", list_instruction="Choose a secondary usage", list_choices = choices, on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "ChooseSegmentStatus") then
+		DQUI.displayDialog( { title=programTitle, type="list", list_instruction="Choose", list_choices = {
+			{ label = "Untouched", u_type="Untouched" }, { label = "Clearing", u_type="Clearing" }, { label = "Cleared", u_type="Cleared" },
+			{ label = "Constructing", u_type="Constructing" }, { label = "Occupied", u_type="Occupied" }
+		}, on_complete = handleChoices, on_back = "BACK" } )
+		return true
+	end
+	return false
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	programTitle = pTitle
+	config = pConfig
+	if (DQStore.get("main", "setup", "false") == "true") then
+		DQUI.registerDialogCallback(handleDialogs)
+		DQUI.registerChoiceCallback("segmentUIChoices", handleChoices)
+		DQUI.addTopOption("Edit segment", handleChoices, "ChooseFloor")
+	end
+end

@@ -1,0 +1,507 @@
+-- This represents the DiamondQ Network
+-- Behave as a GPS unit
+-- Forward traffic between nodes
+
+local debug = false
+local logger = DQDebug.getDebugLogger("DQNet", debug)
+
+local sBroadcastChannel = 61318
+local sConfig = {}
+local callbacks = {}
+local sModemAction = nil
+local sModemSide = nil
+-- by id, contains type, last seen time, last distance, last routed via
+local routes = {}
+local route_count = 0
+local global_reply_count = 0
+
+local function hash(currentHash, message)
+	if (string.len(message) > 0) then
+		for var=1,string.len(message) do
+			local code = string.byte(message, var)
+			currentHash = (bit.blshift(currentHash, 5) - currentHash) + code
+			currentHash = bit.band(currentHash, 2147483647)
+		end
+	end
+	return currentHash
+end
+
+local function hmac(pKey, pMessage)
+	local blocksize = 4
+    if (string.len(pKey) < blocksize) then
+        pKey = pKey .. string.rep(' ', blocksize - string.len(pKey)) -- keys shorter than blocksize are zero-padded
+    end
+	local hashKey = hash(0, pKey)
+	
+    local o_key_pad = bit.bxor(23644, hashKey)
+    local i_key_pad = bit.bxor(13878, hashKey)
+   
+    return hash(0, o_key_pad .. hash(0, i_key_pad .. pMessage))
+end
+
+-- A message has a final destination, the computer type, 
+local function buildMessage(pType, pTargetID, pDestID, pOrigSenderID, pMessage, pReplyTo, pInReplyTo)
+	local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z" }, { 2147483647, 2147483647, 2147483647 })
+	if (type(pTargetID) == "nil") then
+		pTargetID = "all"
+	end
+	if (type(pDestID) == "nil") then
+		pDestID = "all"
+	end
+	if (type(pReplyTo) == "nil") then
+		pReplyTo = -1
+	end
+	if (type(pInReplyTo) == "nil") then
+		pInReplyTo = -1
+	end
+	if (type(pOrigSenderID) == "nil") then
+		pOrigSenderID = os.computerID()
+	end
+	local t = type(pMessage)
+	local am
+	if (t == "table") then
+		am = textutils.serialize(pMessage)
+	elseif (t == "string") then
+		am = pMessage
+	elseif (t == "nil") then
+		am = ""
+	else
+		am = tostring(pMessage)
+	end
+	local hashMessage = "t=" .. pType .. ",tid=" .. pTargetID .. ",d=" .. pDestID
+		.. ",s=" .. os.computerID() .. ",oid=" .. pOrigSenderID
+		.. ",c=" .. sConfig.computer_type .. ",x=" .. loc[1] .. ",y="
+		.. loc[2] .. ",z=" .. loc[3] .. ",r="
+		.. pReplyTo .. ",ir=" .. pInReplyTo .. ",m=" .. am
+	local actualMessage = "||DQ||h=" .. hmac(sConfig.network_password, hashMessage) .. "," .. hashMessage
+	return actualMessage
+end
+
+-- Send a broadcast message across the network
+-- pType = type of message
+-- pMessage = message to send
+function sendBroadcastMessage(pType, pMessage)
+	local actualMessage = buildMessage(pType, nil, nil, nil, pMessage)
+	logger:debug("sending broadcast message: %s", DQDebug.serialize1(actualMessage))
+	DQStore.increment({ "network", "stats" }, "send")
+	sModem.transmit(sBroadcastChannel, sBroadcastChannel, actualMessage)	
+end
+
+local function sendDirectMessage(pTargetID, pType, pDestID, pMessage, pReplyTo, pInReplyTo)
+	local actualMessage = buildMessage(pType, pTargetID, pDestID, nil, pMessage, pReplyTo, pInReplyTo)
+	logger:debug("%s", DQDebug.serialize1(function()
+		local senderType
+		if (type(routes[tostring(pTargetID)]) == "nil") then
+			senderType = "Unknown"
+		else
+			senderType = routes[tostring(pTargetID)].type
+		end
+		local debugMess = "To " .. tostring(pDestID) .. "(" .. senderType .. ")"
+		if (tostring(pTargetID) ~= tostring(pDestID)) then
+			debugMess = debugMess .. " via " .. tostring(pTargetID)
+		end
+		if ((type(pInReplyTo) ~= "nil") and (tonumber(pInReplyTo) ~= -1)) then
+			debugMess = debugMess .. " inreply(" .. tostring(pInReplyTo) .. ")"
+		end
+		debugMess = debugMess .. " " .. pType
+		if (string.len(pMessage) > 0) then
+			debugMess = debugMess .. " -> " .. pMessage
+		end
+		return debugMess
+	end))
+	
+	DQStore.increment({ "network", "stats"}, "send")
+	sModem.transmit(sBroadcastChannel, sBroadcastChannel, actualMessage)	
+end
+
+function sendReplyTo(pTargetID, pReplyID, pType, pMessage)
+	if (type(routes[tostring(pTargetID)]) == "nil") then
+		return -1
+	end
+	local replyTo = global_reply_count + 1
+	global_reply_count = replyTo
+	if (#routes[tostring(pTargetID)].via > 0) then
+		sendDirectMessage(routes[tostring(pTargetID)].via[1], pType, pTargetID, pMessage, replyTo, pReplyID)
+	else
+		sendDirectMessage(pTargetID, pType, pTargetID, pMessage, replyTo, pReplyID)
+	end
+	return replyTo
+end
+
+function sendMessage(pTargetID, pType, pMessage)
+	logger:debug("sendMessage(%s, %s, %s)", DQDebug.serialize3(pTargetID, pType, pMessage))
+	if (type(routes[tostring(pTargetID)]) == "nil") then
+		return -1
+	end
+	local replyTo = global_reply_count + 1
+	global_reply_count = replyTo
+	if (#routes[tostring(pTargetID)].via > 0) then
+		sendDirectMessage(routes[tostring(pTargetID)].via[1], pType, pTargetID, pMessage, replyTo)
+	else
+		sendDirectMessage(pTargetID, pType, pTargetID, pMessage, replyTo)
+	end
+	return replyTo
+end
+
+function sendNonDQMessage(pTargetID, pMessage)
+	DQStore.increment({ "network", "stats" }, "send")
+	-- Simulate the rednet behavior where the computer ID's are used as the channel IDs
+	sModem.transmit(pTargetID, os.getComputerID(), pMessage)
+end
+
+function getIDByType(pComputerType)
+	local result = {}
+	for k,v in pairs(routes) do
+		if (v.type == pComputerType) then
+			table.insert(result, k)
+		end
+	end
+	return result
+end
+
+function getIDByTypeAndDist(pComputerType, pX, pY, pZ)
+	local nearestDist = 99999999
+	local nearestId = false
+	for k,v in pairs(routes) do
+		if (v.type == pComputerType) then
+			local dist = math.sqrt((math.abs(pX - v.x) * math.abs(pX - v.x)) + (math.abs(pY - v.y) * math.abs(pY - v.y)) + (math.abs(pZ - v.z) * math.abs(pZ - v.z)))
+			if (dist < nearestDist) then
+				nearestId = k
+				nearestDist = dist
+			end
+		end
+	end
+	return nearestId
+end
+
+function receiveMessage(pUnused, pEvent, pModemSide, pSenderChannel, pReplyChannel, pMessage, pSenderDistance)
+	logger:debug("receiveMessage(%s, %s, %s, %s, %s, %s, %s)", DQDebug.serialize7(pUnused, pEvent, pModemSide, pSenderChannel, pReplyChannel, pMessage, pSenderDistance))
+	if (type(pMessage) == "nil") then
+		return true
+	end
+	local s, y, mHMAC, mType, mTargetID, mDest, mSenderID, mOrigSenderID, mComputer, mX, mY, mZ, mReplyTo, mInReplyTo, message = string.find(
+		pMessage, "||DQ||h=([^,]+),t=([^,]+),tid=([^,]+),d=([^,]+),s=([^,]+),oid=([^,]+),c=([^,]+),x=([^,]+),y=([^,]+),z=([^,]+),r=([^,]+),ir=([^,]+),m=(.*)")
+	if (mSenderID == tostring(os.computerID())) then
+		-- We now appear to be receiving traffic from ourselves. Filter it out
+		return true
+	end
+	if ((mTargetID ~= "all") and (mTargetID ~= tostring(os.computerID()))) then
+		return true
+	end
+	if (type(s) == "nil") then
+		DQStore.increment({ "network", "stats" }, "rawreceive")
+		return true
+	end
+	if (type(sConfig.network_password) == "nil") then
+		return true
+	end
+	logger:debug("%s", DQDebug.serialize1(function()
+		local debugMess = "From " .. mOrigSenderID .. "(" .. mComputer .. ")"
+		if (tostring(mSenderID) ~= tostring(mOrigSenderID)) then
+			debugMess = debugMess .. " via " .. tostring(mSenderID)
+		end
+		if (tostring(mTargetID) ~= tostring(mDest)) then
+			debugMess = debugMess .. " to " .. string(mDest)
+		end
+		if ((type(mReplyTo) ~= "nil") and (tonumber(mReplyTo) ~= -1)) then
+			debugMess = debugMess .. " reply(" .. tostring(mReplyTo) .. ")"
+		end
+		debugMess = debugMess .. " " .. mType
+		if (string.len(message) > 0) then
+			debugMess = debugMess .. " -> " .. message
+		end
+		return debugMess
+	end))
+	-- Validate the hmac
+	local cHMAC = hmac(sConfig.network_password, "t=" .. mType .. ",tid=" .. mTargetID .. ",d=" .. mDest
+		.. ",s=" .. mSenderID .. ",oid=" .. mOrigSenderID .. ",c=" .. mComputer
+		.. ",x=" .. mX .. ",y=" .. mY .. ",z=" .. mZ .. ",r=" .. mReplyTo .. ",ir=" .. mInReplyTo .. ",m=" .. message)
+	if (tostring(cHMAC) ~= tostring(mHMAC)) then
+		logger:info("Received message that doesn't match our password. Ignoring. cHMAC(%s)=%s ~= %s", DQDebug.serialize3(message, cHMAC, mHMAC))
+		DQStore.increment({ "network", "stats" }, "errors")
+		return true
+	end
+	if (mType ~= "debug") then
+		DQStore.increment({ "network", "stats" }, "receive")
+	end
+	-- Record the sender in the routing database
+	local newRoute = false
+	if (type(routes[mSenderID]) == "nil") then
+		routes[mSenderID] = {}
+		newRoute = true
+	end
+	routes[mSenderID].type = mComputer
+	routes[mSenderID].last = os.clock()
+	routes[mSenderID].x = mX
+	routes[mSenderID].y = mY
+	routes[mSenderID].z = mZ
+	routes[mSenderID].dist = pSenderDistance
+	routes[mSenderID].via = {}
+	if (newRoute == true) then
+		route_count = route_count + 1
+		logger:debug("New network route detected")		
+		DQStore.store({"network", "stats"}, "route_count", route_count)
+	end
+	-- Determine if we should send the message on
+	if ((mDest ~= "all") and (tostring(mDest) ~= tostring(os.computerID()))) then
+		logger:debug("Not the final destination")
+		error("Routing not yet supported")
+	else
+		if (mType == "hello") then
+			if (message == "join") then
+				sendDirectMessage(mSenderID, "join", mSenderID, "welcome")
+			end
+		elseif (mType == "join") then
+			if (message == "welcome") then
+				if (type(callbacks.join) == "function") then
+					callbacks.join()
+				end
+			end
+		elseif (mType == "ping") then
+			local senderRoutes = textutils.unserialize(message)
+			-- Update our routing table
+			for k,v in pairs(senderRoutes) do
+				-- Make sure we're not on the routing table, indicating a loop
+				local skip = false
+				if (k == os.computerID()) then
+					skip = true
+				else
+					for _,v2 in pairs(v.via) do
+						if (tostring(v2) == tostring(os.computerID())) then
+							skip = true
+							break
+						end
+					end
+				end
+				if (skip == false) then
+					if (type(routes[k]) == "nil") then
+						routes[k] = { type=v.type, last=os.clock(), x = v.x, y=v.y, z=v.z, via=v.via }
+						-- table.insert(routes[k].via, 1, mSenderID)
+						route_count = route_count + 1
+						DQStore.store({"network", "stats"}, "route_count", route_count)
+					else
+						-- See if this is a faster route or the same route, in which case, update
+						local update = true
+						if (#v.via > #routes[k].via) then
+							update = false
+						else
+							if (#v.via == #routes[k].via) then
+								for k2,v2 in ipairs(v.via) do
+									if (routes[k].via[k2] ~= v2) then
+										update = false
+										break
+									end
+								end
+							end
+						end
+						if (update == true) then
+							routes[k].type = v.type
+							routes[k].last = os.clock()
+							routes[k].x = v.x
+							routes[k].y = v.y
+							routes[k].z = v.z
+							routes[k].via = v.via
+							-- table.insert(routes[k].via, 1, mSenderID)
+						end
+					end
+				end
+			end
+		else
+			-- Inform listeners of message
+			if (type(callbacks[mType]) == "table") then
+				local replyTo
+				if (mInReplyTo == "-1") then
+					replyTo = "any"
+				else
+					replyTo = mInReplyTo
+				end
+				if (type(callbacks[mType][replyTo]) == "table") then
+					local results = {}
+					for k,v in ipairs(callbacks[mType][replyTo]) do
+						results[k] = v
+					end
+					for _,v in ipairs(results) do
+						v.f(v.data, mType, message, tonumber(mSenderID), mReplyTo, mInReplyTo, mComputer, mX, mY, mZ)
+					end
+				end
+			end
+			if (type(callbacks["__all__"]) == "table") then
+				local replyTo
+				if (mInReplyTo == "-1") then
+					replyTo = "any"
+				else
+					replyTo = mInReplyTo
+				end
+				if (type(callbacks["__all__"][replyTo]) == "table") then
+					local results = {}
+					for k,v in ipairs(callbacks["__all__"][replyTo]) do
+						results[k] = v
+					end
+					for _,v in ipairs(results) do
+						v.f(v.data, mType, message, tonumber(mSenderID), mReplyTo, mInReplyTo, mComputer, mX, mY, mZ)
+					end
+				end
+			end
+		end
+	end
+	return true
+end
+
+local function searchForModem()
+	for k,side in pairs(rs.getSides()) do
+		if (peripheral.isPresent(side)) then
+			if (peripheral.getType(side) == "modem") then
+				local mt = peripheral.getMethods(side)
+				local fm = false
+				for m,_ in pairs(mt) do
+					if (m == "isWireless") then
+						fm = true
+						break
+					end
+				end
+				if (fm == false) then
+					sModemSide = side
+					break
+				else
+					if (peripheral.call(side, "isWireless") == true) then
+						sModemSide = side
+						break
+					end
+				end
+			end
+		end
+	end
+	if (type(sModemSide) ~= "nil") then
+		sModem = peripheral.wrap(sModemSide)
+		if (sModem.isOpen(sBroadcastChannel) == true) then
+			logger:debug("Channel " .. sBroadcastChannel .. " is already open")
+		else
+			sModem.open(sBroadcastChannel)
+			logger:debug("Opened Channel " .. sBroadcastChannel)
+		end
+		DQStore.store("status", "network_status", "OK")
+		if (sModemAction == "create") then
+			create()
+		elseif (sModemAction == "join") then
+			join()
+		end
+	else
+		DQStore.store("status", "network_status", "FAIL")
+	end
+end
+
+function modemChange(pUnused, pEvent, pParam1)
+	if (pEvent == "peripheral_detach") then
+		if (sModemSide == pParam1) then
+			-- We've lost the modem
+			logger:debug("Closing all channels")
+			sModem.closeAll()
+			sModemSide = nil
+			sModem = nil
+			searchForModem()
+		end
+	elseif (pEvent == "peripheral") then
+		if (peripheral.isPresent(pParam1)) then
+			if (peripheral.getType(pParam1) == "modem") then
+				-- We've gained a modem, but we only care if we don't have a modem
+				if (sModemSide == nil) then
+					searchForModem()
+				end
+			end
+		end
+	end
+end
+
+function pingHandler(pUnused, pEvent, pParam1)
+	-- Purge any records that we haven't heard from in more than 4 minutes
+	local oldTime = os.clock() - 240
+	local remove = {}
+	for k,v in pairs(routes) do
+		if (v.last < oldTime) then
+			table.insert(remove, k)
+		end
+	end
+	if (#remove > 0) then
+		for _,v in ipairs(remove) do
+			routes[v] = nil
+		end
+		route_count = route_count - #remove
+		DQStore.store({ "network", "stats" }, "route_count", route_count)
+	end
+	sendBroadcastMessage("ping", textutils.serialize(routes))
+	DQUtils.registerOneTimeEventCallback("timer", pingHandler, nil, os.startTimer(30))
+end
+
+-- Callback is func(pType, pMessage, pSenderID, pReplyTo, pInReplyTo, pComputer, pX, pY, pZ)
+function registerMessageCallback(pMessageType, pCallback, pData, pReplyTo)
+	if (type(pMessageType) == "nil") then
+		pMessageType = "__all__"
+	end
+	if (type(callbacks[pMessageType]) == "nil") then
+		callbacks[pMessageType] = {}
+	end
+	if (type(pReplyTo) == "nil") then
+		pReplyTo = "any"
+	else
+		pReplyTo = tostring(pReplyTo)
+	end
+	if (type(callbacks[pMessageType][pReplyTo]) == "nil") then
+		callbacks[pMessageType][pReplyTo] = {}
+	end
+	table.insert(callbacks[pMessageType][pReplyTo], { f = pCallback, data = pData } )
+end
+
+function deregisterMessageCallback(pMessageType, pCallback, pReplyTo)
+	if (type(pMessageType) == "nil") then
+		pMessageType = "__all__"
+	end
+	if (type(callbacks[pMessageType]) == "nil") then
+		return
+	end
+	if (type(pReplyTo) == "nil") then
+		pReplyTo = "any"
+	else
+		pReplyTo = tostring(pReplyTo)
+	end
+	if (type(callbacks[pMessageType][pReplyTo]) == "nil") then
+		return
+	end
+	local results = {}
+	for k,v in pairs(callbacks[pMessageType][pReplyTo]) do
+		if (v.f == pCallback) then
+			table.insert(results, k)
+		end
+	end
+	table.sort(results, function(a,b)
+			if (a > b) then
+				return true
+			end
+			return false
+		end
+	)
+	for _,v in ipairs(results) do
+		table.remove(callbacks[pMessageType][pReplyTo], v)
+	end
+end
+
+function create()
+	sModemAction = "create"
+	sendBroadcastMessage("hello", "create")
+	DQUtils.registerOneTimeEventCallback("timer", pingHandler, nil, os.startTimer(30))
+end
+
+function join(pJoinCallback)
+	sModemAction = "join"
+	callbacks.join = pJoinCallback
+	sendBroadcastMessage("hello", "join")
+	DQUtils.registerOneTimeEventCallback("timer", pingHandler, nil, os.startTimer(30))
+end
+
+function setup(pProgramTitle, pConfig, pEventHandlers)
+	sConfig = pConfig
+	searchForModem()
+	DQStore.store({"network", "stats"}, "route_count", route_count)
+	DQUtils.registerEventCallback("modem_message", receiveMessage)
+	DQUtils.registerEventCallback("peripheral", modemChange)
+	DQUtils.registerEventCallback("peripheral_detach", modemChange)
+end

@@ -1,0 +1,129 @@
+
+local DQD = DQObject.class("DQMovePlannerDebug")
+local DQE = DQObject.class("DQMovePlannerDebug")
+
+function DQE:init() end
+function DQD:init()
+	self.queue = {}
+	self.queueCount = 1
+	self.time = 1
+end
+
+function DQE:setStart() end
+function DQD:setStart(pPlan, pState)
+	table.insert(self.queue, { self.time, "setStart", DQUtils.copyTable(pPlan.funcs.getAllStates(pState)) })
+	self:processQueue()
+end
+
+function DQE:clearGoals() end
+function DQD:clearGoals(pPlan)
+	table.insert(self.queue, { self.time, "clearGoals" } )
+	self:processQueue()
+end
+
+function DQE:addGoal() end
+function DQD:addGoal(pPlan, pState)
+	table.insert(self.queue, { self.time, "addGoal", DQUtils.copyTable(pPlan.funcs.getAllStates(pState)) })
+	self:processQueue()
+end
+
+function DQE:adjustOpenSet() end
+function DQD:adjustOpenSet(pPlan, pOpenSet)
+end
+
+function DQE:computing() end
+function DQD:computing(pPlan, pState)
+	table.insert(self.queue, { self.time, "computing", DQUtils.copyTable(pPlan.funcs.getAllStates(pState)) })
+	self:processQueue()
+end
+
+function DQE:increaseTime() end
+function DQD:increaseTime()
+	self.time = self.time + 1
+end
+
+function DQE:processQueue() end
+function DQD:processQueue()
+	if (#self.queue > 100) then
+		self:writeQueue()
+	end
+end
+
+local function encode(pV)
+	local r = ""
+	local s,e,x,y = string.find(pV, "([^:,=&%$#]*)([:,=&%$#]?)")
+	while ((type(s) ~= "nil") and (s <= e)) do
+		if (y == ":") then
+			r = r .. x .. "&1"
+		elseif (y == ",") then
+			r = r .. x .. "&2"
+		elseif (y == "=") then
+			r = r .. x .. "&3"
+		elseif (y == "&") then
+			r = r .. x .. "&4"
+		elseif (y == "$") then
+			r = r .. x .. "&5"
+		elseif (y == "#") then
+			r = r .. x .. "&6"
+		elseif (y == "") then
+			r = r .. x
+		else
+			error("Unrecognized escape")
+		end
+		s,e,x,y = string.find(pV, "([^:,=&%$#]*)([:,=&%$#]?)", e + 1)
+	end
+	return r
+end
+
+local function serialize(pV)
+	local t = type(pV)
+ 	if (t == "nil") then
+		return t .. ":"
+	elseif (t == "boolean") then
+		return t .. ":" .. tostring(pV)
+	elseif (t == "number") then
+		return t .. ":" .. tostring(pV)
+	elseif (t == "string") then
+		return t .. ":" .. tostring(pV)
+	elseif (t == "function") then
+		return t .. ":"
+	elseif (t == "userdata") then
+		return t .. ":"
+	elseif (t == "thread") then
+		return t .. ":"
+	elseif (t == "table") then
+		local s = t .. ":"
+		for k,v in pairs(pV) do
+			s = s .. encode(serialize(k)) .. "=" .. encode(serialize(v)) .. ","
+		end
+		return s
+	else
+		error("Unrecognized type: " .. t)
+	end
+end
+
+function DQE:writeQueue() end
+function DQD:writeQueue()
+	DQDebug.writeToLog("******* WRITEQUEUE = " .. tostring(#self.queue))
+	local s = ""
+	for _,v in ipairs(self.queue) do
+		local l = ""
+		for _,v2 in ipairs(v) do
+			l = l .. "$" .. serialize(v2)
+		end
+		l = l .. "#"
+		s = s .. l
+	end
+	local r = http.post("http://ravensview1318.mooo.com:3000/upload/queue_" .. tostring(self.queueCount), s)
+	r.close()
+	self.queueCount = self.queueCount + 1
+	self.queue = {}
+end
+
+function getLogger(pDebug)
+	if (pDebug == true) then
+		return DQD:new()
+	else
+		return DQE:new()
+	end
+end

@@ -1,0 +1,14 @@
+{ info={ name="Base" },
+  blocks={ { name="computer", blockname="Computer" },
+	{ name="drive", blockname="Disk Drive" },
+	{ name="wireless", blockname="Wireless Modem" },
+	{ name="chest", blockname="Chest" }
+  },
+  actions= {
+  { type="place", block="computer", x=5, y=5, z=5, td="u", tf="E" },
+  { type="place", block="drive", x=6, y=5, z=5, td="u", tf="E" },
+  { type="place", block="wireless", x=5, y=5, z=6, td="d", tf="E" },
+  { type="place", block="chest", x=6, y=4, z=6, td="d", tf="E" },
+  { type="place", block="chest", x=6, y=5, z=7, td="d", tf="E" }
+} }
+

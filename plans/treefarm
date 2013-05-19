@@ -1,0 +1,10 @@
+{ info={},
+  blocks={ { name="floor", type="base-flooring" }, { name="lwall", type="base-flooring" }, { name="rwall", id="54"}, { name="bwall", id="54"}, { name="fwall", id="54"}, { name="torch", id="54"}, { name="sapling", id="54"} },
+  actions= {
+  { type="place-cube", block="floor", x1=1, x2=8, y1=1, y2=8, z1=1,z2=1, td="d" },
+  { type="place-cube", block="lwall", x1=1, x2=8, y1=1, y2=1, z1=2,z2=9, td="d" },
+  { type="place-cube", block="rwall", x1=1, x2=8, y1=8, y2=8, z1=2,z2=9, td="d" },
+  { type="place-cube", block="bwall", x1=1, x2=1, y1=2, y2=7, z1=2,z2=9, td="d" },
+  { type="place-cube", block="fwall", x1=8, x2=8, y1=2, y2=7, z1=2,z2=9, td="d" },
+} }
+

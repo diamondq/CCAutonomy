@@ -1,0 +1,254 @@
+-- DQWorkerTurtle
+
+local debug = true
+local sConfig = {}
+local jobMap = {}
+
+local logger = DQDebug.getDebugLogger("DQWorkerTurtle", debug)
+
+function addJob(pJobName, pJobClass)
+	jobMap[pJobName] = pJobClass
+end
+
+local DQWorkerTurtleClass = DQObject.class("DQWorkerTurtleClass", FiniteStateMachine.FSMActor)
+function DQWorkerTurtleClass:preStart()
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.primaryGoal = false
+	rSelf.goalOwner = false
+	rSelf.failedMessage = false
+	rSelf.doneMessage = false
+	rSelf:getActorRef():tell(FiniteStateMachine.StartupEvent, nil, rSelf:getActorRef())
+end
+
+----------------------------------------
+-- Startup
+----------------------------------------
+
+function DQWorkerTurtleClass:whenStarting(pMessage, pData)
+	logger:debug("whenStarting(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	self:setState("register")
+	return true
+end
+
+----------------------------------------
+-- Registration
+----------------------------------------
+
+function DQWorkerTurtleClass:onStartToRegister()
+	logger:debug("onStartToRegister")
+	-- Register with the main computer registry
+	if ((type(sConfig) == "nil") or (type(sConfig.computer_type) == "nil")) then
+		error("Computer type is not defined")
+	end
+	self:getContext():actorFor("@main:/Registry"):tell("register", { type=sConfig.computer_type }, self:getActorRef())
+	return true
+end
+
+function DQWorkerTurtleClass:whenRegistering(pMessage, pData)
+	logger:debug("whenRegistering(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	if ((type(tonumber(DQStore.get("location", "gps_x"))) == "number")
+		and (type(tonumber(DQStore.get("location", "gps_y"))) == "number")
+		and (type(tonumber(DQStore.get("location", "gps_z"))) == "number")) then	
+		self:setState("park")
+	else
+		self:setState("lost")
+	end
+	return true
+end
+
+----------------------------------------
+-- Lost
+----------------------------------------
+
+function DQWorkerTurtleClass:onLost()
+	logger:debug("onLost()")
+	self:getContext():actorFor("@main:/Registry"):tell("lost", nil, self:getActorRef())
+	return true
+end
+
+----------------------------------------
+-- Idle
+----------------------------------------
+
+function DQWorkerTurtleClass:onIdle()
+	logger:debug("onIdle()")
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	-- Ask for a job
+	rSelf:getContext():actorFor("@main:/Registry"):tell("idle", { type=sConfig.computer_type }, rSelf:getActorRef())
+	rSelf:getActorRef():tell("idleTick", nil, rSelf:getActorRef(), 30)
+	return true
+end
+
+-- Just ignore idle ticks that aren't handled elsewhere. This prevents an
+-- unnecessary message when the system has already received a job
+function DQWorkerTurtleClass:eventIdleTick(pMessage, pData)
+	return true
+end
+
+function DQWorkerTurtleClass:whenIdleEventIdleTick(pMessage, pData)
+	logger:debug("whenIdleEventIdleTick(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf:setState("idle")
+	return true
+end
+
+function DQWorkerTurtleClass:whenIdle(pMessage, pData)
+	logger:debug("whenIdle(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	if (pMessage == FiniteStateMachine.TimeoutMessage) then
+		-- We didn't receive a message from the Jobs system. We'll re-send so that it's aware that we're idle
+		self:setState("idle")
+	elseif (pMessage == "performJob") then
+		local rSelf = DQWorkerTurtleClass:cast(self)
+		DQDebug.writeToLog("Received job: " .. pMessage)
+		rSelf.primaryGoal = pData
+		rSelf.goalOwner = rSelf:getSender()
+		rSelf.goalOwner:tell("ack", nil, rSelf:getActorRef())
+		self:setState("beginWorking")
+	else
+		return false
+	end
+	return true
+end
+
+----------------------------------------
+-- BeginWorking
+----------------------------------------
+
+function DQWorkerTurtleClass:onBeginWorking()
+	logger:debug("onBeginWorking()")
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	local jobClass = jobMap[rSelf.primaryGoal.job]
+	if (type(jobClass) == "nil") then
+		rSelf.goalOwner:tell("failedJob", "Unable to find job class for " .. rSelf.primaryGoal.job, rSelf:getActorRef())
+		rSelf:setState("idle")
+		return true
+	end
+	local child = rSelf:getContext():actorCreate(jobClass, "Job", rSelf:getActorRef())
+	child:tell("begin", rSelf.primaryGoal, rSelf:getActorRef())
+	return true
+end
+
+function DQWorkerTurtleClass:whenBeginWorkingEventAck(pMessage, pData)
+	logger:debug("whenBeginWorkingEventAck(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	self:setState("working")
+	return true
+end
+
+function DQWorkerTurtleClass:onWorking()
+	logger:debug("onWorking()")
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf.goalOwner:tell("workingJob", nil, rSelf:getActorRef())
+	rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef(), 30)
+	return true
+end
+
+function DQWorkerTurtleClass:whenWorkingEventJobResult(pMessage, pData)
+	logger:debug("whenWorkingEventJobResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	if (pData == true) then
+		rSelf:setState("done")
+	else
+		rSelf.failedMessage = pData
+		rSelf:setState("failed")
+	end
+	ActorSystem.actorStop(rSelf:getSender())
+	return true
+end
+
+function DQWorkerTurtleClass:whenWorking(pMessage, pData)
+	logger:debug("whenWorking(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	if (pMessage == "tick") then
+		rSelf:setState("working")
+		return true
+	elseif (pMessage == "cancelledJob") then
+		rSelf.failedMessage = pMessage
+		rSelf:setState("failedAck")
+		return true
+	end
+end
+
+function DQWorkerTurtleClass:onDone()
+	logger:debug("onDone()")
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf.goalOwner:tell("doneJob", nil, rSelf:getActorRef())
+	rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef(), 30)
+	return true
+end
+
+function DQWorkerTurtleClass:whenDoneEventTick(pMessage, pData)
+	logger:debug("whenDoneEventTick(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf:setState(rSelf:getState())
+	return true
+end
+
+function DQWorkerTurtleClass:whenDoneEventAck(pMessage, pData)
+	logger:debug("whenDoneEventAck(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf:setState("park")
+	rSelf.primaryGoal = false
+	rSelf.goalOwner = false
+	rSelf.failedMessage = false
+	rSelf.doneMessage = false
+	return true
+end
+
+function DQWorkerTurtleClass:onFailed()
+	logger:debug("onFailed()")
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf.goalOwner:tell("failedJob", rSelf.failedMessage, rSelf:getActorRef())
+	rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef(), 30)
+	return true
+end
+
+-- We'll ignore any tick message that isn't handled by a more specific state.
+-- These are usually due to already acknowledged messages, but the 30 second timer is just
+-- now firing
+function DQWorkerTurtleClass:eventTick()
+	logger:debug("eventTick()")
+	return true
+end
+
+function DQWorkerTurtleClass:whenFailedEventTick()
+	logger:debug("whenFailedEventTick(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf:setState(rSelf:getState())
+	return true
+end
+
+function DQWorkerTurtleClass:whenFailedEventAck()
+	logger:debug("whenFailedEventAck(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf:setState("park")
+	rSelf.primaryGoal = false
+	rSelf.goalOwner = false
+	rSelf.failedMessage = false
+	rSelf.doneMessage = false
+	return true
+end
+
+function DQWorkerTurtleClass:onPark()
+	logger:debug("onPark()")
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("emptyInventory", nil, rSelf:getActorRef())	
+--	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("park", nil, rSelf:getActorRef())
+	return true
+end
+
+function DQWorkerTurtleClass:whenParkEventParkResult(pMessage, pData)
+	logger:debug("whenParkEventParkResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerTurtleClass:cast(self)
+	if (pData == true) then
+		rSelf:setState("idle")
+	else
+		error("Unable to park")
+	end
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	sConfig = pConfig
+	ActorSystem.actorCreate(DQWorkerTurtleClass, "/Worker")
+end

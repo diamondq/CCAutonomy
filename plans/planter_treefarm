@@ -1,0 +1,119 @@
+10 magtube
+17 stone
+22 pneumatic tube
+2 restriction tube
+1 filter
+3 bundled cable
+6 jacketed cable
+2 brown insulated wire
+1 planter
+1 pink insulated wire
+2 accelerator
+2 blue alloy wire
+1 ejector
+1 transposer
+
+1 yellow paint brush
+1 dirt
+1 computer
+1 harvestor
+1 relay
+1 wireless modem
+
+z = 1
+	y = 1
+		x = 8	magtube
+	y = 2
+		x = 8	magtube
+	y = 3
+		x = 8	magtube
+	y = 4
+		x = 2,3	stone
+		x = 8	magtube
+	y = 5
+		x = 8	magtube
+	y = 6
+		x = 2,3,7 stone
+		x = 8	magtube
+	y = 7
+		x = 8	magtube
+	y = 8
+		x = 7	stone
+		x = 8	magtube
+z = 2
+	y = 1
+	y = 2
+		x = 1	pneumatic tube
+		x = 2	restriction tube
+		x = 3	filter (in faces -x) (color = red)
+		x = 4,5,6 pneumatic tube
+	y = 3
+		x = 1	pneumatic tube
+		x = 6	pneumatic tube
+	y = 4
+		x = 1	pneumatic tube
+		x = 2	bundled cable
+		x = 2	jacketed cable
+		x = 3	brown insulated wire
+		x = 4	planter
+		x = 6	pneumatic tube
+	y = 5
+		x = 1	pneumatic tube
+		x = 2	jacketed cable
+		x = 4	pneumatic tube
+		x = 6 	pneumatic tube
+		x = 7	acclerator
+		x = 8	magtube
+	y = 6
+		x = 1	pneumatic tube
+		x = 2	bundled cable
+		x = 2	jacketed cable
+		x = 3	pink insulated wire
+		x = 4	ejector
+		x = 7	blue alloy wire
+	y = 7
+		x = 1,2	pneumatic tube
+		x = 3	restriction tube
+		x = 4	pneumatic tube
+		x = 5	transposer (in faces x)
+		x = 6	pneumatic tube (color=yellow)
+		x = 7	acclerator
+		x = 8 	magtube
+	y = 8
+		x = 7	blue alloy wire
+z = 3
+	y = 2
+		x = 3,4,5	stone
+	y = 3
+		x = 3	stone
+		x = 4	dirt
+		x = 5 	stone
+	y = 4
+		x = 2,3,4,5 	stone
+	y = 5
+		x = 2,3	stone
+		x = 6	pneumatic tube
+	y = 6
+		x = 2	jacketed cable
+z = 4
+	y = 4
+		x = 2	computer
+	y = 5
+		x = 2	bundled cable
+		x = 2	jacketed cable
+		x = 3	brown insulated wire
+		x = 4	harvestor
+		x = 6	pneumatic tube
+	y = 6
+		x = 2	jacketed cable
+		x = 4	relay
+		x = 6 	pneumatic tube
+	y = 7
+		x = 4,5,6	pneumatic tube
+z = 5
+	y = 4
+		x = 2	wireless modem
+	
+		
+		
+		

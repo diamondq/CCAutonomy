@@ -1,0 +1,189 @@
+-- LogisticsManager
+
+local debug = true
+local logger = DQDebug.getDebugLogger("DFLMan", debug)
+
+-- States (in rough order): { get, [moveToInventory], queryInventory, connect, changeSlot, request, finished }
+
+local DFLMan = DQObject.class("DFLMan", FiniteStateMachine.FSMActor)
+function DFLMan:preStart()
+	local rSelf = DFLMan:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.turtle = rSelf:getContext():actorFor("/Turtle")
+end
+
+function DFLMan:eventGet(pMessage, pData)
+	logger:debug("eventGet(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFLMan:cast(self)
+	rSelf.name = pData.name
+	rSelf.slot = pData.slot
+	rSelf.amount = pData.amount
+	rSelf.sender = rSelf:getSender()
+	rSelf:setState("queryInventory")
+	return true
+end
+
+function DFLMan:onQueryInventory()
+	logger:debug("onQueryInventory()")
+	local rSelf = DFLMan:cast(self)
+	for k,v in pairs(redstone.getSides()) do
+		logger:debug("side: " .. v)
+		if (peripheral.isPresent(v)) then
+			if (peripheral.getType(v) == "LogisticsPipes:Request") then
+				rSelf.pipe = peripheral.wrap(v)
+			end
+		end
+	end
+	if (type(rSelf.pipe) == "nil") then
+		rSelf.sender:tell("logisticsResult", "No request pipe available", rSelf:getActorRef())
+	else
+		local f = function(pSelf, pEvent, pParam1, pParam2, pParam3)
+			pSelf:getActorRef():tell("queryResult", pParam1, pSelf:getActorRef())
+		end
+		DQUtils.registerOneTimeEventCallback("available_items_return", f, rSelf)
+		rSelf.pipe.getAvailableItems()
+	end
+	return true
+end
+
+function DFLMan:whenQueryInventoryEventQueryResult(pMessage, pData)
+	logger:debug("eventGet(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFLMan:cast(self)
+	local itemIDs = nil
+	rSelf.queryResult = {}
+	for _,v in ipairs(pData) do
+		local n = rSelf.pipe.getItemName(v[1])
+		if (n == rSelf.name) then
+			table.insert(rSelf.queryResult, v)
+		end
+	end
+	if (#rSelf.queryResult == 0) then
+		rSelf.sender:tell("logisticsResult", false, rSelf:getActorRef())
+	else
+		rSelf:setState("connect")
+	end
+	return true
+end
+
+function DFLMan:onConnect()
+	logger:debug("onQueryInventory()")
+	local rSelf = DFLMan:cast(self)
+	rSelf.pipe.setTurtleConnect(true)
+	-- Determine the count of each slot before the request
+	rSelf.slots = {}
+	for s=1,16 do
+		rSelf.slots[s] = DQTurtle.getItemCount(s)
+	end
+	rSelf:setState("request")
+	return true
+end
+
+function DFLMan:onRequest()
+	logger:debug("onQueryInventory()")
+	local rSelf = DFLMan:cast(self)
+	local c = rSelf.amount
+	rSelf.f = function(pSelf, pEvent, pParam1, pParam2, pParam3)
+		pSelf:getActorRef():tell("requestResult", { pEvent, pParam1, pParam2 }, pSelf:getActorRef())
+	end
+	DQUtils.registerOneTimeEventCallback("request_successfull", rSelf.f, rSelf)
+	DQUtils.registerOneTimeEventCallback("request_failed", rSelf.f, rSelf)
+	for _,v in ipairs(rSelf.queryResult) do
+		local a = math.min(c, v[2])
+		if (a > 0) then
+			rSelf.pipe.makeRequest(v[1], a)
+			c = c - a
+		end
+	end
+	rSelf.requested = rSelf.amount - c
+	return true
+end
+
+function DFLMan:whenRequestEventRequestResult(pMessage, pData)
+	logger:debug("whenRequestEventRequestResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFLMan:cast(self)
+	-- Check
+	rSelf:setState("checkInvForComplete")
+	return true
+end
+
+function DFLMan:onCheckInvForComplete()
+	logger:debug("onCheckInvForComplete()")
+	local rSelf = DFLMan:cast(self)
+	local inc = 0
+	for s=1,16 do
+		local c = DQTurtle.getItemCount(s)
+		if (rSelf.slots[s] ~= c) then
+			inc = inc + (c - rSelf.slots[s])
+		end
+	end
+	if (inc == rSelf.requested) then
+		rSelf:setState("adjustSlots")
+	else
+		rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef(), 2)
+	end
+	return true
+end
+
+function DFLMan:whenCheckInvForCompleteEventTick(pMessage, pData)
+	logger:debug("whenCheckInvForCompleteEventTick(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFLMan:cast(self)
+	rSelf:setState("checkInvForComplete")
+	return true
+end
+
+function DFLMan:onAdjustSlots()
+	logger:debug("onAdjustSlots()")
+	local rSelf = DFLMan:cast(self)
+	if (DQTurtle.getItemCount(rSelf.slot) == rSelf.slots[rSelf.slot] + rSelf.requested) then
+		rSelf:setState("finished")
+	else
+		for s=1,16 do
+			local c = DQTurtle.getItemCount(s)
+			if (rSelf.slots[s] < c) then
+				rSelf.transferAmount = c - rSelf.slots[s]
+				rSelf.turtle:tell("select", s, rSelf:getActorRef())
+				break
+			end
+		end
+	end
+	return true
+end
+
+function DFLMan:whenAdjustSlotsEventSelectResult(pMessage, pData)
+	logger:debug("whenAdjustSlotsEventSelectResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFLMan:cast(self)
+	if (pData == true) then
+		rSelf.turtle:tell("transferTo", { rSelf.slot, rSelf.transferAmount }, rSelf:getActorRef())
+	else
+	end
+	return true
+end
+
+function DFLMan:whenAdjustSlotsEventTransferToResult(pMessage, pData)
+	logger:debug("whenAdjustSlotsEventTransferToResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFLMan:cast(self)
+	if (pData == true) then
+		rSelf:setState("adjustSlots")
+	else
+	end
+	return true
+end
+
+function DFLMan:onFinished()
+	logger:debug("onFinished()")
+	local rSelf = DFLMan:cast(self)
+	rSelf.pipe.setTurtleConnect(false)
+	rSelf.pipe = nil
+	local r
+	if (rSelf.requested == rSelf.amount) then
+		r = true
+	else
+		r = false
+	end
+	rSelf.sender:tell("logisticsResult", r, rSelf:getActorRef())
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	ActorSystem.actorCreate(DFLMan, "/LogisticsManager")
+end

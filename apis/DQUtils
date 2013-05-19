@@ -1,0 +1,465 @@
+-- DQUtils
+local debug = true
+local logger = DQDebug.getDebugLogger("DQUtils", debug)
+
+local config = {}
+local eventCallbacks = {}
+local sBase64 = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T",
+	"U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q",
+	"r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "+", "/" }
+local sDBase64 = {}
+
+local y = 0
+for x=65,90 do sDBase64[x] = y; y = y + 1 end
+for x=97,122 do sDBase64[x] = y; y = y + 1 end
+for x=48,57 do sDBase64[x] = y; y = y + 1 end
+sDBase64[43] = y; y = y + 1
+sDBase64[47] = y; y = y + 1
+
+-- Base64 encode 3 numbers (that must be in the range from 0-255)
+function encode(p1, p2, p3)
+	local a = bit.blshift(p1, 16) + bit.blshift(p2, 8) + p3
+	local c1 = bit.brshift(bit.band(a, 16515072), 18) + 1
+	local c2 = bit.brshift(bit.band(a, 258048), 12) + 1
+	local c3 = bit.brshift(bit.band(a, 4032), 6) + 1
+	local c4 = bit.band(p3, 63) + 1
+	return sBase64[c1] .. sBase64[c2] .. sBase64[c3] .. sBase64[c4]
+end
+
+-- Base64 decode a string (must be an even multiple of 4 characters)
+function decode(pStr)
+	local r = {}
+	for z=1,string.len(pStr)/4 do
+		local b1, b2, b3, b4 = string.byte(pStr, ((z - 1) * 4) + 1, z * 4)
+		-- logger:debug("Decode: %s, %s, %s, %s", DQDebug.serialize4(b1, b2, b3, b4))
+		local a = bit.blshift(sDBase64[b1], 18) + bit.blshift(sDBase64[b2], 12) + bit.blshift(sDBase64[b3], 6) + sDBase64[b4]
+		table.insert(r, bit.brshift(bit.band(a, 16711680), 16))
+		table.insert(r, bit.brshift(bit.band(a, 65280), 8))
+		table.insert(r, bit.band(a, 255))
+	end
+	return r
+end
+
+function lookupFunction(pObj, pPrefix, pMiddle1, pMiddle2, pEvent)
+	local n, l, u
+	local r = {}
+	local tm1 = type(pMiddle1)
+	local tm2 = type(pMiddle2)
+	local te = type(pEvent)
+	if (tm2 ~= "nil") then
+		l = string.sub(pMiddle2, 1, 1)
+		u = string.upper(l)
+		if (l ~= u) then
+			pMiddle2 = u .. string.sub(pMiddle2, 2)
+		end
+	end
+	if (te == "string") then
+		l = string.sub(pEvent, 1, 1)
+		u = string.upper(l)
+		if (l ~= u) then
+			pEvent = u .. string.sub(pEvent, 2)
+		end
+	end
+	if (tm1 ~= "nil") then
+		l = string.sub(pMiddle1, 1, 1)
+		u = string.upper(l)
+		if (l ~= u) then
+			pMiddle1 = u .. string.sub(pMiddle1, 2)
+		end
+	
+		-- Try the both variants
+		if (te ~= "nil") then
+			n = pPrefix .. pMiddle1 .. "To" .. pMiddle2 .. "Event" .. pEvent
+			if (type(pObj[n]) == "function") then table.insert(r, n) end
+		end
+	end
+	
+	if ((te ~= "nil") and (tm2 ~= "nil")) then
+		n = pPrefix .. pMiddle2 .. "ingEvent" .. pEvent
+		if (type(pObj[n]) == "function") then table.insert(r, n) end
+	end
+	
+	if ((te ~= "nil") and (tm2 ~= "nil")) then
+		n = pPrefix .. pMiddle2 .. "Event" .. pEvent
+		if (type(pObj[n]) == "function") then table.insert(r, n) end
+	end
+
+	if ((tm1 ~= "nil") and (tm2 ~= "nil")) then
+		n = pPrefix .. pMiddle1 .. "To" .. pMiddle2
+		if (type(pObj[n]) == "function") then table.insert(r, n) end
+	end
+	
+	if (tm2 ~= "nil") then
+		n = pPrefix .. pMiddle2 .. "ing"
+		if (type(pObj[n]) == "function") then table.insert(r, n) end
+	end
+	
+	if (tm2 ~= "nil") then
+		n = pPrefix .. pMiddle2
+		if (type(pObj[n]) == "function") then table.insert(r, n) end
+	end
+
+	if (tm1 ~= "nil") then
+		n = pPrefix .. pMiddle1 .. "ing"
+		if (type(pObj[n]) == "function") then table.insert(r, n) end
+	end
+	
+	if (tm1 ~= "nil") then
+		n = pPrefix .. pMiddle1
+		if (type(pObj[n]) == "function") then table.insert(r, n) end
+	end
+
+	if (te ~= "nil") then
+		n = "event" .. pEvent
+		if (type(pObj[n]) == "function") then table.insert(r, n) end
+	end
+	
+	n = pPrefix .. "Unhandled"
+	if (type(pObj[n]) == "function") then table.insert(r, n) end
+	
+	return r
+end
+
+local processQueue = {}
+local processQueueId = 1
+
+function pushEventQueue(pEvent, pData)
+	processQueue[processQueueId] = pData
+	os.queueEvent(pEvent, processQueueId)
+	processQueueId = processQueueId + 1
+end
+
+function getEventQueue(pQueueId)
+	local data = processQueue[pQueueId]
+	processQueue[pQueueId] = nil
+	return data
+end
+
+local yieldQueue = {}
+local lastYield = 0
+
+function getYieldQueue()
+	return yieldQueue
+end
+
+function setLastPull()
+	lastYield = os.clock()
+end
+
+function yield()
+	local currentTime = os.clock()
+	if (lastYield + 2 < currentTime) then
+		local yieldTimer = os.startTimer(0.1)
+		while true do
+			local event, param1, param2, param3, param4, param5 = os.pullEvent()
+			if ((event == "timer") and (param1 == yieldTimer)) then
+				break
+			elseif (event == "terminate") then
+				error("Terminating")
+			else
+				table.insert(yieldQueue, { event = event, param1 = param1, param2 = param2, param3 = param3, param4 = param4, param5 = param5 } )
+			end
+		end
+		lastYield = currentTime
+	end
+end
+
+function compare(pObj1, pObj2)
+	local t1 = type(pObj1)
+	local t2 = type(pObj2)
+	local o1 = pObj1
+	local o2 = pObj2
+	if (t1 ~= t2) then
+		if ((t1 == "number") and (t2 == "string")) then
+			o1  = tostring(o1)
+			t1 = "string"
+		elseif ((t1 == "string") and (t2 == "number")) then
+			o2 = tostring(o2)
+			t2 = "string"
+		else
+			return false
+		end
+	end
+	if ((t1 == "string") or (t1 == "number") or (t1 == "boolean") or (t1 == "function") or (t1 == "nil")) then
+		return o1 == o2
+	elseif (t1 == "table") then
+		for k, v in pairs(o1) do
+			if ((type(v) == "table") and (type(o2[k]) == "table")) then
+				if (compare(v, o2[k]) == false) then
+					return false
+				end
+			else
+				if (v ~= o2[k]) then
+					return false
+				end
+			end
+		end
+		for k, v in pairs(o2) do
+			if ((type(v) == "table") and (type(o1[k]) == "table")) then
+				if (compare(v, o1[k]) == false) then
+					return false
+				end
+			else
+				if (v ~= o1[k]) then
+					return false
+				end
+			end
+		end
+		return true
+	end
+end
+
+function writeConfig(pConfig, pConfigPath)
+	if (pConfig == nil) then
+		pConfig = config
+	end
+	if (pConfigPath == nil) then
+		pConfigPath = "config"
+	end
+	-- Write out the current configuration file
+	local h = fs.open(pConfigPath, "w")
+	for k,v in pairs(pConfig) do
+		if ((type(pConfig.writeIgnore) == "nil") or (pConfig.writeIgnore[k] == nil)) then
+			h.writeLine(k .. " = " .. string.format("%q", v))
+		end
+	end
+	h.close()
+end
+
+local function internalRegisterEventCallback(pEvent, pFunc, pData, pOneTimeOnly, pParam1, pParam2, pParam3, pParam4, pParam5)
+	if (type(pEvent) == "nil") then
+		pEvent = "__all__"
+	end
+	if (type(eventCallbacks[pEvent]) == "nil") then
+		eventCallbacks[pEvent] = {}
+	end
+	for _,v in ipairs(eventCallbacks[pEvent]) do
+		if (v.f == pFunc) then
+			if (((pParam1 == nil) or (pParam1 == v.param1))
+				and ((pParam2 == nil) or (pParam2 == v.param2))
+				and ((pParam3 == nil) or (pParam3 == v.param3))
+				and ((pParam4 == nil) or (pParam4 == v.param5))
+				and ((pParam5 == nil) or (pParam5 == v.param4))
+				) then
+				v.param1 = pParam1
+				v.param2 = pParam2
+				v.param3 = pParam3
+				v.param4 = pParam4
+				v.param5 = pParam5
+				v.data = pData
+				return
+			end
+		end
+	end
+	table.insert(eventCallbacks[pEvent], { f = pFunc, data = pData, once=pOneTimeOnly,
+		param1 = pParam1, param2 = pParam2, param3 = pParam3, param4 = pParam4, param5 = pParam5 } )
+end
+
+function registerEventCallback(pEvent, pFunc, pData, pParam1, pParam2, pParam3, pParam4, pParam5)
+	internalRegisterEventCallback(pEvent, pFunc, pData, false, pParam1, pParam2, pParam3, pParam4, pParam5)
+end
+
+function registerOneTimeEventCallback(pEvent, pFunc, pData, pParam1, pParam2, pParam3, pParam4, pParam5)
+	internalRegisterEventCallback(pEvent, pFunc, pData, true, pParam1, pParam2, pParam3, pParam4, pParam5)
+end
+
+function deregisterEventCallback(pEvent, pFunc, pParam1, pParam2, pParam3, pParam4, pParam5)
+	if (type(pEvent) == "nil") then
+		pEvent = "__all__"
+	end
+	if (type(eventCallbacks[pEvent]) == "nil") then
+		return
+	end
+	repeat
+		local found = -1
+		for k,v in ipairs(eventCallbacks[pEvent]) do
+			if (v.f == pFunc) then
+				if (((pParam1 == nil) or (pParam1 == v.param1))
+					and ((pParam2 == nil) or (pParam2 == v.param2))
+					and ((pParam3 == nil) or (pParam3 == v.param3))
+					and ((pParam4 == nil) or (pParam4 == v.param4))
+					and ((pParam5 == nil) or (pParam5 == v.param5))
+					) then
+					found = k
+					break
+				end
+			end
+		end
+		if (found ~= -1) then
+			table.remove(eventCallbacks[pEvent], found)
+		end
+	until found == -1
+end
+
+local function eventHandler(pEvent, pParam1, pParam2, pParam3, pParam4, pParam5)
+	local handledEvent = false
+	-- logger:debug("eventHandler(%s, %s, %s, %s, %s, %s)", DQDebug.serialize6(pEvent, pParam1, pParam2, pParam3, pParam4, pParam5))
+	if (type(eventCallbacks[pEvent]) ~= "nil") then
+		local copy = {}
+		local cleanup = {}
+		for k,v in ipairs(eventCallbacks[pEvent]) do
+			if (((v.param1 == nil) or (v.param1 == pParam1))
+				and ((v.param2 == nil) or (v.param2 == pParam2))
+				and ((v.param3 == nil) or (v.param3 == pParam3))
+				and ((v.param4 == nil) or (v.param4 == pParam4))
+				and ((v.param5 == nil) or (v.param5 == pParam5))
+				) then
+				table.insert(copy, v)
+				if (v.once == true) then
+					table.insert(cleanup, 1, k)
+				end
+			end
+		end
+		if (#cleanup > 0) then
+			for _,v in ipairs(cleanup) do
+				table.remove(eventCallbacks[pEvent], v)
+			end
+		end
+		for _,v in ipairs(copy) do
+			if (type(v.f) == "nil") then
+				DQDebug.dump(eventCallbacks, "A function is nil for a callback. Crashing...")
+			end
+			v.f(v.data, pEvent, pParam1, pParam2, pParam3, pParam4, pParam5)
+			handledEvent = true
+		end
+	end
+	if (type(eventCallbacks["__all__"]) ~= "nil") then
+		local copy = {}
+		for k,v in ipairs(eventCallbacks["__all__"]) do
+			copy[k] = v
+		end
+		for _,v in ipairs(copy) do
+			if (((v.param1 == nil) or (v.param1 == pParam1))
+				and ((v.param2 == nil) or (v.param2 == pParam2))
+				and ((v.param3 == nil) or (v.param3 == pParam3))
+				and ((v.param4 == nil) or (v.param4 == pParam4))
+				and ((v.param5 == nil) or (v.param5 == pParam5))
+				) then
+				v.f(v.data, pEvent, pParam1, pParam2, pParam3, pParam4, pParam5)
+				handledEvent = true
+			end
+		end
+	end
+	return handledEvent
+end
+
+function setup(pProgramTitle, pConfig, pEventHandlers)
+	config = pConfig
+	table.insert(pEventHandlers, 1, eventHandler)
+end
+
+function shallowCopyTable(origin, destination, keys)
+	if (destination == nil) then
+		destination = {}
+	end
+	-- no keys provided - duplicate all keys
+	if (keys == nil) then
+		for key,value in pairs(origin) do
+			destination[key] = value
+		end
+	else
+		-- duplicate only the keys provided
+		for _,key in pairs(keys) do
+			destination[key] = origin[key]
+		end
+	end
+	return destination
+end
+
+function copyValue(pV)
+	local t = type(pV)
+ 	if (t == "nil") then
+		return nil
+	elseif (t == "boolean") then
+		return pV
+	elseif (t == "number") then
+		return pV
+	elseif (t == "string") then
+		return pV .. ""
+	elseif (t == "function") then
+		return pV
+	elseif (t == "userdata") then
+		return pV
+	elseif (t == "thread") then
+		return pV
+	elseif (t == "table") then
+		return copyTable(pV)
+	else
+		error("Unrecognized type: " .. t)
+	end
+end
+
+function copyTable(origin, destination, keys)
+	if (destination == nil) then
+		destination = {}
+	end
+	-- no keys provided - duplicate all keys
+	if (keys == nil) then
+		for key,value in pairs(origin) do
+			destination[copyValue(key)] = copyValue(value)
+		end
+	else
+		-- duplicate only the keys provided
+		for _,key in pairs(keys) do
+			destination[copyValue(key)] = copyValue(origin[key])
+		end
+	end
+	return destination
+end
+
+-- Work out the turtle pos
+function calculateTurtlePos(x, y, z, tx, ty, tz, tf, td)
+	if (type(tf) == "nil") then
+		tf = -1
+	elseif (tonumber(tf) == nil) then
+		tf = tonumber(tf)
+	else
+		if ((tf == "N") or (tf == "n")) then
+			tf = 1
+		elseif ((tf == "E") or (tf == "e")) then
+			tf = 2
+		elseif ((tf == "S") or (tf == "s")) then
+			tf = 3
+		elseif ((tf == "W") or (tf == "w")) then
+			tf = 4
+		else
+			tf = -1
+		end
+	end
+	-- Handle defaults
+	if (type(td) == "nil") then
+		td = "d"
+	end
+	if (type(tx) == "nil") then
+		if ((td == "f") and ((tf == 2) or (tf == 4))) then
+			if (tf == 2) then
+				tx = x - 1
+			else
+				tx = x + 1
+			end
+		else
+			tx = x
+		end
+	end
+	if (type(ty) == "nil") then
+		if ((td == "f") and ((tf == 1) or (tf == 3))) then
+			if (tf == 1) then
+				ty = y + 1
+			else
+				ty = y - 1
+			end
+		else
+			ty = y
+		end
+	end
+	if (type(tz) == "nil") then
+		if (td == "d") then
+			tz = z + 1
+		elseif (td == "u") then
+			tz = z - 1
+		else
+			tz = z
+		end
+	end
+	return tx, ty, tz, tf, td
+end

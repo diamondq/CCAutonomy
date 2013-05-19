@@ -1,0 +1,282 @@
+-- Debug
+
+local h = fs.open("debug", "w")
+h.write("")
+h.close()
+local debugSize = 0
+
+local function s(d)
+	local t = type(d)
+	if (t == "function") then
+		d = d()
+		t = type(d)
+	end
+	if (t == "table") then
+		if ((type(d["class"]) == "function") and (type(d.class()["static"]) == "table") and (type(d.class()["inherits"]) == "function")) then
+			return d.baseinst.class():name()
+		else
+			return textutils.serialize(d)
+		end
+	else
+		return tostring(d)
+	end
+end
+
+function serialize10(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10)
+	return function()
+		return { s(p1), s(p2), s(p3), s(p4), s(p5), s(p6), s(p7), s(p8), s(p9), s(p10) }
+	end
+end
+function serialize9(p1, p2, p3, p4, p5, p6, p7, p8, p9)
+	return function()
+		return { s(p1), s(p2), s(p3), s(p4), s(p5), s(p6), s(p7), s(p8), s(p9) }
+	end
+end
+function serialize8(p1, p2, p3, p4, p5, p6, p7, p8)
+	return function()
+		return { s(p1), s(p2), s(p3), s(p4), s(p5), s(p6), s(p7), s(p8) }
+	end
+end
+function serialize7(p1, p2, p3, p4, p5, p6, p7)
+	return function()
+		return { s(p1), s(p2), s(p3), s(p4), s(p5), s(p6), s(p7) }
+	end
+end
+function serialize6(p1, p2, p3, p4, p5, p6)
+	return function()
+		return { s(p1), s(p2), s(p3), s(p4), s(p5), s(p6) }
+	end
+end
+function serialize5(p1, p2, p3, p4, p5)
+	return function()
+		return { s(p1), s(p2), s(p3), s(p4), s(p5) }
+	end
+end
+function serialize4(p1, p2, p3, p4)
+	return function()
+		return { s(p1), s(p2), s(p3), s(p4) }
+	end
+end
+function serialize3(p1, p2, p3)
+	return function()
+		return { s(p1), s(p2), s(p3) }
+	end
+end
+function serialize2(p1, p2)
+	return function()
+		return { s(p1), s(p2) }
+	end
+end
+function serialize1(p1)
+	return function()
+		return { s(p1) }
+	end
+end
+
+function convertToStr(pMessage, pData)
+	local data
+	if (type(pMessage) == "function") then
+		data = pMessage()
+		if (type(data) == "nil") then
+			error("message function in debugger returned a nil")
+		end
+	else
+		data = tostring(pMessage)
+		if (type(data) == "nil") then
+			error("pMessage argument (" .. type(pMessage) .. ") in debugger was nil when tostring()")
+		end
+	end
+	if (type(pData) == "nil") then
+		return data
+	end
+	local args
+	if (type(pData) == "function") then
+		args = pData()
+	elseif (type(pData) == "table") then
+		args = pData
+	else
+		args = { tostring(pData) }
+	end
+	local c = table.maxn(args)
+	if (c == 1) then
+		return string.format(data, args[1])
+	elseif (c == 2) then
+		return string.format(data, args[1], args[2])
+	elseif (c == 3) then
+		return string.format(data, args[1], args[2], args[3])
+	elseif (c == 4) then
+		return string.format(data, args[1], args[2], args[3], args[4])
+	elseif (c == 5) then
+		return string.format(data, args[1], args[2], args[3], args[4], args[5])
+	elseif (c == 6) then
+		return string.format(data, args[1], args[2], args[3], args[4], args[5], args[6])
+	elseif (c == 7) then
+		return string.format(data, args[1], args[2], args[3], args[4], args[5], args[6], args[7])
+	elseif (c == 8) then
+		return string.format(data, args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8])
+	elseif (c == 9) then
+		return string.format(data, args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9])
+	else
+		return string.format(data, args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10])
+	end
+end
+
+function getDebugLogger(pBaseName, pForceDebug)
+	if (type(pBaseName) == "nil") then
+		error("The basename argument for getDebugLogger must not be nil")
+	end
+	local f = function(pSelf, pMessage, pData)
+			local a
+			if (type(pMessage) == "nil") then
+				a = ""
+			else
+				if (type(pData) == "nil") then
+					a = convertToStr(pMessage)
+				else
+					a = convertToStr(pMessage, pData)
+				end
+			end
+			if (type(a) == "nil") then
+				error("logger convertToStr returned nil for (" .. type(pMessage) .. ", " .. type(pData) .. ")")
+			end
+			if (type(pBaseName) == "nil") then
+				error("logger pBaseName returned nil")
+			end
+			DQDebug.writeToLog(pBaseName .. " " .. a)
+		end
+	if (pForceDebug == false) then
+		return { debug=function() end, info=f, error=f }
+	else
+		return { debug=f, info=f, error=f }
+	end
+end
+
+function writeToLog(message, localDebugFlag)
+	if ((type(localDebugFlag) ~= "nil") and (localDebugFlag == false)) then
+		return
+	end
+	if (type(message) == "nil") then
+		message = ""
+	end
+	local debugMessage = textutils.formatTime(os.time(), false) .. " " .. message
+	debugSize = debugSize + string.len(debugMessage)
+	local mode = "a"
+	if (debugSize > 300000) then
+		mode = "w"
+		debugSize = string.len(debugMessage)
+	end
+	local h = fs.open("debug", mode)
+	h.writeLine(debugMessage)
+	h.close()
+end
+
+function printEvent(event, pParam1, pParam2, pParam3, pParam4, pParam5)
+	if ((event == "key") or (event == "char") or (event == "timer") or (event == "DQUI_Refresh") or (string.sub(event, 1, 12) == "GoalNewChild") or (event == "turtle_response")) then
+		return
+	end
+	local message = "Received event: " .. event
+	if (type(pParam1) ~= "nil") then
+		message = message .. " P1: " .. tostring(pParam1)
+	end
+	if (type(pParam2) ~= "nil") then
+		message = message .. " P2: " .. tostring(pParam2)
+	end
+	if (type(pParam3) ~= "nil") then
+		message = message .. " P3: " .. tostring(pParam3)
+	end
+	if (type(pParam4) ~= "nil") then
+		message = message .. " P4: " .. tostring(pParam4)
+	end
+	if (type(pParam5) ~= "nil") then
+		message = message .. " P5: " .. tostring(pParam5)
+	end
+	writeToLog(message)
+	return false
+end
+
+function setup(pProgramTitle, pConfig, pEventHandlers)
+	table.insert(pEventHandlers, printEvent)
+end
+
+-- "nil" (a string, not the value nil), "number", "string", "boolean", "table", "function", "thread", and "userdata".
+local function __dump(pObj, prefix, level, pSeen)
+	if (type(pObj) == "nil") then
+		return (string.rep(" ", level * 3) .. prefix .. "nil" .. string.char(10))
+	elseif (type(pObj) == "number") then
+		return(string.rep(" ", level * 3) .. prefix .. "number: " .. tostring(pObj) .. string.char(10))
+	elseif (type(pObj) == "string") then
+		return(string.rep(" ", level * 3) .. prefix .. "string: " .. tostring(pObj) .. string.char(10))
+	elseif (type(pObj) == "boolean") then
+		return(string.rep(" ", level * 3) .. prefix .. "boolean: " .. tostring(pObj) .. string.char(10))
+	elseif (type(pObj) == "function") then
+		return(string.rep(" ", level * 3) .. prefix .. tostring(pObj) .. string.char(10))
+	elseif (type(pObj) == "thread") then
+		return(string.rep(" ", level * 3) .. prefix .. "thread: " .. tostring(pObj) .. string.char(10))
+	elseif (type(pObj) == "userdata") then
+		return(string.rep(" ", level * 3) .. prefix .. "userdata: " .. tostring(pObj) .. string.char(10))
+	elseif (type(pObj) == "table") then
+		local mess = (string.rep(" ", level * 3) .. prefix .. "table:")
+		if (type(pSeen[pObj]) == "nil") then
+			pSeen[pObj] = true
+			mess = mess .. string.char(10)
+			for k,v in pairs(pObj) do
+				mess = mess .. __dump(v, "[" .. tostring(k) .. "] ", level + 1, pSeen)
+			end
+		else
+			mess = mess .. " ----> RECURSIVE <----" .. string.char(10)
+		end
+		return mess
+	end
+	return ""
+end
+
+local function __formatInline(pObj, prefix, pSeen)
+	if (type(pObj) == "nil") then
+		return (prefix .. "nil")
+	elseif (type(pObj) == "number") then
+		return(prefix .. "number: " .. tostring(pObj))
+	elseif (type(pObj) == "string") then
+		return(prefix .. "string: " .. tostring(pObj))
+	elseif (type(pObj) == "boolean") then
+		return(prefix .. "boolean: " .. tostring(pObj))
+	elseif (type(pObj) == "function") then
+		return(prefix .. tostring(pObj))
+	elseif (type(pObj) == "thread") then
+		return(prefix .. "thread: " .. tostring(pObj))
+	elseif (type(pObj) == "userdata") then
+		return(prefix .. "userdata: " .. tostring(pObj))
+	elseif (type(pObj) == "table") then
+		local mess = (prefix .. "table:")
+		if (type(pSeen[pObj]) == "nil") then
+			pSeen[pObj] = true
+			local doneFirst = false
+			for k,v in pairs(pObj) do
+				if (doneFirst == false) then
+					doneFirst = true
+				else
+					mess = mess .. ", "
+				end
+				mess = mess .. __formatInline(v, "[" .. tostring(k) .. "] ", pSeen)
+			end
+		else
+			mess = mess .. " ----> RECURSIVE <----"
+		end
+		return mess
+	end
+	return ""
+end
+
+function formatInline(pObj)
+	local seen = { pObj = true }
+	return __formatInline(pObj, "", seen)
+end
+
+function dump(pObj, message)
+	if (type(message) == "nil") then
+		writeToLog("Dumping object...")
+	else
+		writeToLog(message)
+	end
+	local seen = { pObj = true }
+	writeToLog(__dump(pObj, "", 0, seen))
+end

@@ -1,0 +1,468 @@
+-- DQWorkerRegistry
+
+local debug = true
+local sTimeout = 120
+
+local logger = DQDebug.getDebugLogger("DQWorkerRegistry", debug)
+
+local DQWorkerRegistry = DQObject.class("DQWorkerRegistry", ActorSystem.TypedActor)
+function DQWorkerRegistry:preStart()
+	local rSelf = DQWorkerRegistry:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.registry = {}
+	rSelf.jobs = {}
+	rSelf.jobId = 0
+	DQStore.store({ "registry", "stats"}, "workerCount", 0)
+	DQStore.store({ "registry", "stats"}, "topWorkers", {})
+	DQStore.store({ "registry", "stats"}, "jobCount", 0)
+	DQStore.store({ "registry", "stats"}, "topJobs", {})
+	
+	-- Get a tick every 30 seconds
+	rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef(), 30)
+end
+
+function DQWorkerRegistry:cleanupJob(pJob)
+	logger:debug("cleanupJob()")
+	local rSelf = DQWorkerRegistry:cast(self)
+	if (type(pJob) ~= "nil") then
+		pJob.last_at = os.clock()
+		-- Pass status to the owner
+		local ownerRef = rSelf:getContext():actorFor(pJob.data.owner)
+		ownerRef:tell("jobStatus", { status=pJob.status, id=pJob.data.id }, rSelf:getActorRef())
+
+		-- Remove the job from the system
+		if (type(pJob.worker) ~= "nil") then
+			pJob.worker.job = nil
+			pJob.worker = nil
+		end
+		local o = -1
+		for k,v in ipairs(rSelf.jobs) do
+			if (v == pJob) then
+				o = k
+				break
+			end
+		end
+		if (o ~= -1) then
+			table.remove(rSelf.jobs, o)
+		end
+	end
+end
+
+function DQWorkerRegistry:eventTick()
+	logger:debug("eventTick()")
+	local rSelf = DQWorkerRegistry:cast(self)
+	
+	-- Clean up any worker that hasn't contacted us recently
+	local cleanup = {}
+	for k,v in pairs(rSelf.registry) do
+		if (v.last_at < (os.clock() - sTimeout)) then
+			table.insert(cleanup, k)
+		end
+	end
+	if (#cleanup > 0) then
+		for _,v in ipairs(cleanup) do
+			local w = rSelf.registry[v]
+			if (type(w.job) ~= "nil") then
+				w.job.status = "failed"
+				rSelf:cleanupJob(w.job)
+			end
+			
+			rSelf.registry[v] = nil
+		end
+		
+		rSelf:updateJobStats()
+		rSelf:updateWorkerStats()
+	end
+	
+	-- Get a tick in 30 seconds
+	rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef(), 30)
+	
+	return true
+end
+
+----------------------------------------------------------------
+-- Internals
+----------------------------------------------------------------
+
+-- This method is called to dispense jobs to any idle worker
+function DQWorkerRegistry:dispenseJobs()
+	logger:debug("dispenseJobs()")
+	
+	local change = false
+	-- Check if there are any waiting jobs
+	for _,j in ipairs(self.jobs) do
+		if (j.status == "waiting") then
+			-- Check if there are any idle workers
+			for k,w in pairs(self.registry) do
+				if (w.status == "idle") then
+					local acceptable = true
+					if ((type(j.data.require) == "table") and (type(j.data.require.type) == "string")) then
+						if (j.data.require.type ~= w.type) then
+							acceptable = false
+						end
+					end
+					if (acceptable == true) then
+						logger:debug("For job %s, the worker %s is acceptable", DQDebug.serialize2(j.data.name, k))
+						w.status = "issuingJob"
+						w.send_at = os.clock()
+						w.job = j
+						j.status = "working"
+						j.last_at=os.clock()
+						j.worker = w
+						self:getContext():actorFor(k):tell("performJob", j.data.data, self:getActorRef())
+						change = true
+						break
+					else
+						logger:debug("For job %s, the worker %s is not acceptable because need %s and got %s", DQDebug.serialize4(j.data.name, k, j.data.require.type, w.type))
+					end
+				end
+			end
+		end
+	end
+	
+	if (change == true) then
+		self:updateWorkerStats()
+		self:updateJobStats()
+	end
+	
+end
+
+function DQWorkerRegistry:updateWorkerStats()
+	local w = {}
+	for k,v in pairs(self.registry) do
+		table.insert(w, { last_at=v.last_at, n=k, s=v.status })
+	end
+	table.sort(w, function(a,b) if (tonumber(a.last_at) > tonumber(b.last_at)) then return true else return false end end)
+	local w2 = {}
+	for _,v in ipairs(w) do
+		table.insert(w2, v)
+		if (#w2 > 10) then
+			break
+		end
+	end
+	DQStore.store({ "registry", "stats"}, "workerCount", #w)
+	DQStore.store({ "registry", "stats"}, "topWorkers", w2)
+	DQUI.refresh()
+end
+
+function DQWorkerRegistry:updateJobStats()
+	local w = DQUtils.shallowCopyTable(self.jobs)
+	table.sort(w, function(a,b) if (tonumber(a.last_at) > tonumber(b.last_at)) then return true else return false end end)
+	local w2 = {}
+	for _,v in ipairs(w) do
+		table.insert(w2, { last_at = v.last_at, n=v.data.name, s=v.status })
+		if (#w2 > 10) then
+			break
+		end
+	end
+	DQStore.store({ "registry", "stats"}, "jobCount", #w)
+	DQStore.store({ "registry", "stats"}, "topJobs", w2)
+	DQUI.refresh()
+end
+
+local function drawRegistryStatus(pContent, pCache, pStartLine)
+	local y = pStartLine + 1
+	if (y < pCache.sh) then
+		DQUI.run("setCursorPos", 3, y)
+		DQUI.run("write", "Jobs: " .. DQStore.get({"registry", "stats"}, "jobCount", 0))
+		DQUI.run("setCursorPos", (pCache.sw / 2) + 10, y)
+		DQUI.run("write", "Workers: " .. DQStore.get({"registry", "stats"}, "workerCount", 0))
+		y = y + 1
+	end
+	-- Write each of the jobs
+	local jobs = DQStore.get({"registry", "stats"}, "topJobs", {})
+	local oy = y
+	for _,v in pairs(jobs) do
+		if (y < pCache.sh) then
+			DQUI.run("setCursorPos", 3, y)
+			local ss
+			if (v.s == "waiting") then
+				ss = "w"
+			else
+				ss = v.s
+			end
+			local suffix = " [" .. ss .. "]"
+			local n = v.n
+			if (type(n) == "nil") then
+				n = ""
+			end
+			if (string.len(n) > ((pCache.sw - 4) - string.len(suffix))) then
+				n = string.sub(n, 1, ((pCache.sw - 4) - string.len(suffix)))
+			end
+			DQUI.run("write", n .. suffix)
+			y = y + 1
+		end
+	end
+	-- Write each of the workers
+	local workers = DQStore.get({"registry", "stats"}, "topWorkers", {})
+	local y = oy
+	for _,v in pairs(workers) do
+		if (y < pCache.sh) then
+			DQUI.run("setCursorPos", (pCache.sw / 2) + 10, y)
+			local ar = ActorSystem.ActorRef:new(v.n)
+			local ws
+			if (v.s == "registered") then
+				ws = "r"
+			elseif (v.s == "idle") then
+				ws = "i"
+			elseif (v.s == "lost") then
+				ws = "l"
+			else
+				ws = v.s
+			end
+			DQUI.run("write", ar:getHostName() .. " [" .. ws .. "]")
+			y = y + 1
+		end
+	end
+end
+
+----------------------------------------------------------------
+-- Job Submitter Events
+----------------------------------------------------------------
+
+-- This event is used to register a new job to be performed by workers
+-- The data must be in the format of:
+-- { id=unique_id_for_owner, name=human_readable_name, owner=path_of_owner, data=data_for_worker, require=worker_requirements }
+-- JobStatus will be sent back to the owner of successful storage of job
+function DQWorkerRegistry:eventNewJob(pMessage, pData)
+	logger:debug("eventNewJob(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerRegistry:cast(self)
+	
+	-- Check to see if this job is already registered (to handle replays)
+	local existing = false
+	for k,v in ipairs(rSelf.jobs) do
+		if ((v.data.id == pData.id) and (v.data.owner == pData.owner)) then
+			existing = true
+			break
+		end
+	end
+	
+	-- If the job isn't already added, then add it now
+	
+	if (existing == false) then
+		rSelf.jobId = rSelf.jobId + 1
+		table.insert(rSelf.jobs, { id=rSelf.jobId, data=pData, status="waiting", last_at=os.clock() } )
+
+		rSelf:updateJobStats()
+		
+		-- Dispense the job to any waiting worker
+		rSelf:dispenseJobs()
+	end
+	
+	-- Send an ack back to the owner
+	rSelf:getContext():actorFor(pData.owner):tell("jobStatus", { status="ack", id=pData.id }, rSelf:getActorRef())
+	
+	return true
+end
+
+----------------------------------------------------------------
+-- Worker Events
+----------------------------------------------------------------
+
+-- This event is sent by a worker to register it's presence
+-- A single actor can only register once
+-- An 'ack' message will be sent back
+function DQWorkerRegistry:eventRegister(pMessage, pData)
+	logger:debug("eventRegister(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerRegistry:cast(self)
+	local s = rSelf:getSender()
+	local p = s:getPath()
+	
+	-- NOTE: If duplicate registrations happen, it's no issue
+	-- as it just updates the existing record
+	
+	if (type(rSelf.registry[p]) == "nil") then
+		logger:debug("Adding worker")
+		rSelf.registry[p] = {}
+	end
+	rSelf.registry[p]["last_at"] = os.clock()
+	local st = rSelf.registry[p].status
+	if ((st == "issuingJob") or (st == "working")) then
+		rSelf.registry[p].job.status = "failed"
+		rSelf:cleanupJob(rSelf.registry[p].job)
+		rSelf:updateJobStats()
+	end
+	rSelf.registry[p]["status"] = "registered"
+	rSelf.registry[p]["type"] = pData.type
+	
+	rSelf:updateWorkerStats()
+	
+	-- Send an acknowledgement
+	
+	s:tell("ack", nil, rSelf:getActorRef())
+	
+	return true
+end
+
+-- The idle event is sent by the worker when it's ready for a job
+-- It may be sent multiple times, every N seconds that the worker is idle
+function DQWorkerRegistry:eventIdle(pMessage, pData)
+	logger:debug("eventIdle(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerRegistry:cast(self)
+	local s = rSelf:getSender()
+	local p = s:getPath()
+	if (type(rSelf.registry[p]) == "nil") then
+		rSelf.registry[p] = {}
+	end
+	-- If the worker has been issued a job, but hasn't ack'd, then ignore the idle
+	if (rSelf.registry[p].status ~= "issuingJob") then
+		rSelf.registry[p]["last_at"] = os.clock()
+		rSelf.registry[p]["status"] = "idle"
+		rSelf.registry[p]["type"] = pData.type
+		
+		-- Check to see if there are any jobs that are available
+		rSelf:dispenseJobs()
+	end
+
+	rSelf:updateWorkerStats()
+	
+	return true
+end
+
+-- The lost event is sent by the worker when it is no longer aware of where
+-- it is. This probably requires human intervention to fix
+function DQWorkerRegistry:eventLost(pMessage, pData)
+	logger:debug("eventLost(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerRegistry:cast(self)
+	local s = rSelf:getSender()
+	local p = s:getPath()
+	if (type(rSelf.registry[p]) == "nil") then
+		rSelf.registry[p] = {}
+	end
+	rSelf.registry[p]["last_at"] = os.clock()
+	if (type(rSelf.registry[p].job) ~= "nil") then
+		rSelf.registry[p].job.status = "failed"
+		rSelf:cleanupJob(rSelf.registry[p].job)
+		rSelf:updateJobStats()
+	end
+	rSelf.registry[p]["status"] = "lost"
+
+	rSelf:updateWorkerStats()
+	
+	return true
+end
+
+-- An ack event is sent by the worker to indicate that it has succesfully
+-- received the job
+function DQWorkerRegistry:eventAck(pMessage, pData)
+	logger:debug("eventAck(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerRegistry:cast(self)
+	local s = rSelf:getSender()
+	local p = s:getPath()
+	
+	if (type(rSelf.registry[p]) ~= "nil") then
+		local w = rSelf.registry[p]
+		w.last_at = os.clock()
+		if (w.status == "issuingJob") then
+			w.status = "working"
+			w.send_at = nil
+			w.job.last_at = os.clock()
+			
+			logger:debug("Passing a working status to parent %s", DQDebug.serialize1(w.job.data.owner))
+			
+			-- Pass status to the owner
+			local ownerRef = rSelf:getContext():actorFor(w.job.data.owner)
+			ownerRef:tell("jobStatus", { status="working", id=w.job.data.id }, rSelf:getActorRef())
+		end
+		
+	end
+
+	rSelf:updateJobStats()
+	rSelf:updateWorkerStats()
+	
+	return true
+end
+
+-- An "workingJob" event is sent by the worker to indicate that is continuing to work the job
+function DQWorkerRegistry:eventWorkingJob(pMessage, pData)
+	logger:debug("eventWorkingJob(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerRegistry:cast(self)
+	local s = rSelf:getSender()
+	local p = s:getPath()
+	
+	if (type(rSelf.registry[p]) ~= "nil") then
+		local w = rSelf.registry[p]
+		w.last_at = os.clock()
+		if (w.status == "working") then
+		
+			w.job.last_at = os.clock()
+		
+			logger:debug("Passing a working status to parent %s", DQDebug.serialize1(w.job.data.owner))
+
+			-- Pass status to the owner
+			local ownerRef = rSelf:getContext():actorFor(w.job.data.owner)
+			ownerRef:tell("jobStatus", { status="working", id=w.job.data.id }, rSelf:getActorRef())
+			
+			rSelf:updateJobStats()
+		end
+	end
+
+	rSelf:updateWorkerStats()
+
+	return true
+end
+
+-- An "failedJob" event is sent by the worker to indicate that it has failed to do a job
+function DQWorkerRegistry:eventFailedJob(pMessage, pData)
+	logger:debug("eventFailedJob(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerRegistry:cast(self)
+	local s = rSelf:getSender()
+	local p = s:getPath()
+	
+	if (type(rSelf.registry[p]) ~= "nil") then
+		local w = rSelf.registry[p]
+		w.last_at = os.clock()
+		if (w.status == "working") then
+			w.status = "failed"
+			w.job.status = "failed"
+			rSelf:cleanupJob(w.job)
+		elseif (w.status == "cancelling") then
+			w.status = "failed"
+			w.job.status = "cancelled"
+			rSelf:cleanupJob(w.job)
+		end
+		
+		rSelf:updateJobStats()
+	end
+
+	rSelf:updateWorkerStats()
+	
+	-- Pass an ack back to the worker
+	s:tell("ack", nil, rSelf:getActorRef())
+	return true
+end
+
+-- An "doneJob" event is sent by the worker to indicate that it has finished the job
+function DQWorkerRegistry:eventDoneJob(pMessage, pData)
+	logger:debug("eventDoneJob(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQWorkerRegistry:cast(self)
+	local s = rSelf:getSender()
+	local p = s:getPath()
+	
+	if (type(rSelf.registry[p]) ~= "nil") then
+		local w = rSelf.registry[p]
+		w.last_at = os.clock()
+		if (w.status == "working") then
+			w.status = "done"
+			w.last_at = os.clock()
+			w.job.status = "done"
+			logger:debug("Worker was working, marked as done, beginning cleanup")
+			rSelf:cleanupJob(w.job)
+		else
+			logger:debug("Worker status was %s, so doing nothing", DQDebug.serialize1(w.status))
+		end
+	end
+
+	rSelf:updateJobStats()
+	rSelf:updateWorkerStats()
+	
+	-- Pass an ack back to the worker
+	s:tell("ack", nil, rSelf:getActorRef())
+	return true
+end
+
+
+function setup(pTitle, pConfig, pEventHandlers)
+	ActorSystem.actorCreate(DQWorkerRegistry, "/Registry")
+	DQUI.addStatusPanel("registry", "Worker Registry", drawRegistryStatus)
+end

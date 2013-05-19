@@ -1,0 +1,395 @@
+local debug = true
+local logger = DQDebug.getDebugLogger("DQMover", debug)
+local sConfig = false
+local debugCount = 0
+
+local DQMover = DQObject.class("DQMover", FiniteStateMachine.FSMActor)
+function DQMover:preStart()
+	local rSelf = DQMover:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.turtle = rSelf:getContext():actorFor("/Turtle")
+end
+
+function DQMover:onStart()
+	return true
+end
+
+function DQMover:eventMove(pMessage, pData)
+	logger:debug("eventMove(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMover:cast(self)
+	
+	rSelf.owner = rSelf:getSender()
+	-- Get the current location
+	local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" } )
+	loc[1] = tonumber(loc[1])
+	loc[2] = tonumber(loc[2])
+	loc[3] = tonumber(loc[3])
+	loc[4] = tonumber(loc[4])
+	
+	rSelf.tx = tonumber(pData.x)
+	rSelf.ty = tonumber(pData.y)
+	rSelf.tz = tonumber(pData.z)
+	if (type(pData.dir) == "nil") then
+		rSelf.tdir = loc[4]
+	else
+		rSelf.tdir = tonumber(pData.dir)
+		if (rSelf.tdir == -1) then
+			rSelf.tdir = loc[4]
+		end
+	end
+
+	local delta = math.abs(rSelf.tx - loc[1]) + math.abs(rSelf.ty - loc[2]) + math.abs(rSelf.tz - loc[3])
+	logger:debug("Move %s from (%s, %s, %s, %s) to (%s, %s, %s, %s)", DQDebug.serialize9(delta, loc[1], loc[2], loc[3], loc[4], rSelf.tx, rSelf.ty, rSelf.tz, rSelf.tdir))
+	
+	-- Quick short-circuit, if we're already there
+	if (delta == 0) then
+		if (rSelf.tdir == loc[4]) then
+			rSelf.owner:tell("moveResult", true, rSelf:getActorRef())
+		else
+			-- Only rotation is off. Perform manual rotation
+			rSelf.mNextMove = nil
+			rSelf:setState("simpleMove")
+		end
+	else
+		-- If we're only off by one, don't perform a complex calculation, since 
+		-- either we're blocked, in which case, we'll never be able to get there anyway
+		-- or it's a single move
+		if (delta == 1) then
+			rSelf.mNextMove = DQMovePlanner.createState( { rSelf.tx, rSelf.ty, rSelf.tz } )
+			rSelf.afterInfo = "simpleMove"
+			rSelf.mFloor, rSelf.mSX, rSelf.mSY = DQPos.getSegData(rSelf.tx, rSelf.ty, rSelf.tz)
+			rSelf:setState("segInfo")
+		else
+			rSelf.mPlan = DQMovePlanner.createPlan(DQMovePlanner.moveFuncs,
+				DQMovePlanner.createState( { loc[1], loc[2], loc[3] } ),
+				DQMovePlanner.createState( { rSelf.tx, rSelf.ty, rSelf.tz }) )
+			
+			if (pResetWorld == true) then
+				DQTurtle.setWorld({})
+			end
+			rSelf.afterInfo = "planning"
+			rSelf.mFloor, rSelf.mSX, rSelf.mSY = DQPos.getSegData(rSelf.tx, rSelf.ty, rSelf.tz)
+			rSelf:setState("segInfo")
+		end
+	end
+	
+	rSelf.mMoveDir = false
+	rSelf.mTry = 1
+	
+	return true
+end
+
+function DQMover:onSegInfo()
+	local rSelf = DQMover:cast(self)
+	logger:debug("onSegInfo() %s/%s/%s", DQDebug.serialize3(rSelf.mFloor, rSelf.mSX, rSelf.mSY))
+	rSelf:getContext():actorFor("/MainStore"):tell("get",
+		{ { "segs", "floor" .. tostring(rSelf.mFloor), "segX" .. tostring(rSelf.mSX), "segY" .. tostring(rSelf.mSY) },
+		{ "status", "world" }, { "Untouched", "" } }, rSelf:getActorRef())
+	return true
+end
+
+function DQMover:whenSegInfoEventData(pMessage, pData)
+	logger:debug("whenSegInfoEventData(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMover:cast(self)
+	rSelf.mSegStatus = pData[1]
+	DQMovePlanner.updateWorldFromSegInfo(DQTurtle.getWorld(), rSelf.mPlan, rSelf.mFloor, rSelf.mSX, rSelf.mSY, pData[1], pData[2])
+	rSelf:setState(rSelf.afterInfo)
+	return true
+end
+
+function DQMover:onPlanning()
+	logger:debug("onPlanning()")
+	local rSelf = DQMover:cast(self)
+	local r = DQMovePlanner.initialPlan(DQTurtle.getWorld(), rSelf.mPlan)
+	DQMovePlanner.mp:writeQueue()
+	if (type(r) == "table") then
+		-- Need more data
+		rSelf.mFloor, rSelf.mSX, rSelf.mSY = DQPos.getSegData(r[1], r[2], r[3])
+		rSelf:setState("segInfo")
+	else
+		debugCount = debugCount + 1
+		local nextMove = DQMovePlanner.getNextMove(DQTurtle.getWorld(), rSelf.mPlan)
+		if ((type(nextMove) == "table") and (nextMove.needData == true)) then
+			-- Need more data
+			rSelf.mFloor, rSelf.mSX, rSelf.mSY = DQPos.getSegData(nextMove.state[1], nextMove.state[2], nextMove.state[3])
+			rSelf:setState("segInfo")
+		else
+			rSelf:setState("plannedMove")
+		end
+	end
+	return true
+end
+
+function DQMover:onPlannedMove()
+	logger:debug("onPlannedMove()")
+	local rSelf = DQMover:cast(self)
+	local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" } )
+	loc[1] = tonumber(loc[1])
+	loc[2] = tonumber(loc[2])
+	loc[3] = tonumber(loc[3])
+	loc[4] = tonumber(loc[4])
+	DQMovePlanner.changeStart(rSelf.mPlan, DQMovePlanner.createState( { loc[1], loc[2], loc[3] } ))
+	rSelf.mNextMove = DQMovePlanner.getNextMove(DQTurtle.getWorld(), rSelf.mPlan)
+	rSelf.afterSuccessMove = "plannedMove"
+	rSelf.afterFailedMove = "planning"
+	rSelf:setState("move")
+	return true
+end
+
+function DQMover:onSimpleMove()
+	logger:debug("onSimpleMove()")
+	local rSelf = DQMover:cast(self)
+	rSelf.afterSuccessMove = "finished"
+	rSelf.afterFailedMove = "failed"
+	rSelf:setState("move")
+	return true
+end
+
+function DQMover:onFinished()
+	logger:debug("onFinished()")
+	local rSelf = DQMover:cast(self)
+	local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" } )
+	loc[1] = tonumber(loc[1])
+	loc[2] = tonumber(loc[2])
+	loc[3] = tonumber(loc[3])
+	loc[4] = tonumber(loc[4])
+	-- logger:debug("fd: (%s, %s, %s, %s) -> (%s, %s)", DQDebug.serialize6(loc[1], loc[2], loc[3], loc[4], rSelf.mNextMove, rSelf.tdir))
+	if (type(rSelf.mNextMove) ~= "nil") then
+		if ((rSelf.mNextMove[1] ~= loc[1]) or (rSelf.mNextMove[2] ~= loc[2]) or (rSelf.mNextMove[3] ~= loc[3])) then
+			-- Didn't make it in one move, try again
+			rSelf:setState("simpleMove")
+			return true
+		end
+	end
+	if (rSelf.tdir == loc[4]) then
+		rSelf.owner:tell("moveResult", true, rSelf:getActorRef())
+	else
+		-- Only rotation is off. Perform manual rotation
+		rSelf.mNextMove = nil
+		rSelf:setState("simpleMove")
+	end
+	return true
+end
+
+function DQMover:onFailed()
+	logger:debug("onFailed()")
+	local rSelf = DQMover:cast(self)
+	rSelf.owner:tell("moveResult", false, rSelf:getActorRef())
+	return true
+end
+
+function DQMover:onMove()
+	logger:debug("onMove()")
+	local rSelf = DQMover:cast(self)
+	local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" } )
+	loc[1] = tonumber(loc[1])
+	loc[2] = tonumber(loc[2])
+	loc[3] = tonumber(loc[3])
+	loc[4] = tonumber(loc[4])
+	if (rSelf.mNextMove == nil) then
+		if (loc[4] == rSelf.tdir) then
+			rSelf.owner:tell("moveResult", true, rSelf:getActorRef())
+		else
+			local turnDir = "l"
+			if (rSelf.tdir == 1) then
+				if (loc[4] == 4) then
+					turnDir = "r"
+				end
+			elseif (rSelf.tdir == 2) then
+				if (loc[4] == 1) then
+					turnDir = "r"
+				end
+			elseif (rSelf.tdir == 3) then
+				if (loc[4] == 2) then
+					turnDir = "r"
+				end
+			elseif (rSelf.tdir == 4) then
+				if (loc[4] == 3) then
+					turnDir = "r"
+				end
+			end
+			rSelf.turtle:tell("move", turnDir, rSelf:getActorRef())
+		end
+	else
+		logger:debug("Next move from [%s, %s, %s, %s] to location [%s, %s, %s]", DQDebug.serialize7(loc[1], loc[2], loc[3], loc[4], rSelf.mNextMove[1], rSelf.mNextMove[2], rSelf.mNextMove[3]))
+		if (loc[1] ~= rSelf.mNextMove[1]) then
+			if (rSelf.mNextMove[1] - loc[1] > 0) then
+				-- Need to move in the positive X direction (ie. East). If not facing East, change direction first
+				if (loc[4] ~= 2) then
+					if ((loc[4] == 1) or (loc[4] == 4)) then
+						rSelf.turtle:tell("move", "r", rSelf:getActorRef())
+					else
+						rSelf.turtle:tell("move", "l", rSelf:getActorRef())
+					end
+				else
+					rSelf.mMoveDir = "f"
+					rSelf.turtle:tell("move", "f", rSelf:getActorRef())
+				end
+			else
+				-- Need to move in the negative X direction (ie. West). If not facing West, change direction first
+				if (loc[4] ~= 4) then
+					if ((loc[4] == 1) or (loc[4] == 2)) then
+						rSelf.turtle:tell("move", "l", rSelf:getActorRef())
+					else
+						rSelf.turtle:tell("move", "r", rSelf:getActorRef())
+					end
+				else
+					rSelf.mMoveDir = "f"
+					rSelf.turtle:tell("move", "f", rSelf:getActorRef())
+				end
+			end
+		elseif (loc[2] ~= rSelf.mNextMove[2]) then
+			if (rSelf.mNextMove[2] - loc[2] > 0) then
+				-- Need to move in the positive Y direction (ie. South). If not facing South, change direction first
+				if (loc[4] ~= 3) then
+					if ((loc[3] == 1) or (loc[4] == 2)) then
+						rSelf.turtle:tell("move", "r", rSelf:getActorRef())
+					else
+						rSelf.turtle:tell("move", "l", rSelf:getActorRef())
+					end
+				else
+					rSelf.mMoveDir = "f"
+					rSelf.turtle:tell("move", "f", rSelf:getActorRef())
+				end
+			else
+				-- Need to move in the negative Y direction (ie. North). If not facing North, change direction first
+				if (loc[4] ~= 1) then
+					if ((loc[4] == 2) or (loc[4] == 3)) then
+						rSelf.turtle:tell("move", "l", rSelf:getActorRef())
+					else
+						rSelf.turtle:tell("move", "r", rSelf:getActorRef())
+					end
+				else
+					rSelf.mMoveDir = "f"
+					rSelf.turtle:tell("move", "f", rSelf:getActorRef())
+				end
+			end
+		elseif (loc[3] ~= rSelf.mNextMove[3]) then
+			if (loc[3] < rSelf.mNextMove[3]) then
+				rSelf.mMoveDir = "u"
+				rSelf.turtle:tell("move", "u", rSelf:getActorRef())
+			else
+				rSelf.mMoveDir = "d"
+				rSelf.turtle:tell("move", "d", rSelf:getActorRef())
+			end
+		else
+			rSelf.owner:tell("moveResult", true, rSelf:getActorRef())
+		end
+	end
+	return true
+end
+
+function DQMover:whenMoveEventMoveResult(pMessage, pData)
+	logger:debug("whenMoveEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMover:cast(self)
+	if (pData == true) then
+		-- Everything went fine, move onto the next step, no need to replan
+		rSelf:setState(rSelf.afterSuccessMove)
+		rSelf.mTry = 1
+	else
+		-- Failed to move
+		local fuel = DQTurtle.getFuelLevel()
+		if (fuel < 1) then
+			rSelf.owner:tell("moveResult", "No fuel remaining", rSelf:getActorRef())
+		else
+			-- See if something is blocking us
+			rSelf:setState("scan")
+			rSelf.mTry = rSelf.mTry + 1
+			if (rSelf.mTry == 4) then
+				rSelf.owner:tell("moveResult", "Still blocked after 4 attempts", rSelf:getActorRef())
+			end
+		end
+	end
+	return true
+end
+
+function DQMover:onScan()
+	logger:debug("onScan()")
+	local rSelf = DQMover:cast(self)
+	rSelf.turtle:tell("detect", rSelf.mMoveDir, rSelf:getActorRef())
+	return true
+end
+
+function DQMover:whenScanEventDetectResult(pMessage, pData)
+	logger:debug("whenScanEventDetectResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMover:cast(self)
+
+	if (pData == true) then
+		-- We're blocked. If we're a miner, and we're in a clearing segment, then we can dig, otherwise, we need to replan
+		logger:debug("We're blocked")
+		if (sConfig.computer_type == "miner") then
+			local f,sx,sy = DQPos.getSegData(rSelf.mNextMove[1], rSelf.mNextMove[2], rSelf.mNextMove[3])
+			rSelf:getContext():actorFor("/MainStore"):tell("get",
+				{ { "segs", "floor" .. tostring(f), "segX" .. tostring(sx), "segY" .. tostring(sy) },
+				{ "status" }, { "Untouched" } }, rSelf:getActorRef())
+		else
+			-- We can't destroy the block, so mark it as in use, and fail, which will likely replan
+			rSelf:setState(rSelf.afterFailedMove)
+			-- DQMovePlanner.updateWorld(DQTurtle.getWorld(), rSelf.mPlan, rSelf.mNextMove, DQPos.sInUse)
+		end
+	else
+		-- Appears to be a temporary block, attempt the move again
+		rSelf:setState(rSelf.afterSuccessMove)
+	end
+	return true
+end
+
+function DQMover:whenScanEventData(pMessage, pData)
+	logger:debug("whenScanEventData(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMover:cast(self)
+	rSelf.mSegStatus = pData[1]
+	logger:debug("The block at %s is %s",
+		DQDebug.serialize2(DQMovePlanner.stateToString(rSelf.mNextMove), rSelf.mSegStatus))
+	if ((rSelf.mSegStatus == "Clearing") or (rSelf.mSegStatus == "Untouched")) then
+		rSelf:setState("blocked")
+	else
+		-- NOTE: We should wait to see if the block goes away. This may be a player or a mob, we don't want to permanently update the world because of that
+		rSelf:setState(rSelf.afterFailedMove)
+		DQMovePlanner.updateWorld(DQTurtle.getWorld(), rSelf.mPlan, rSelf.mNextMove, DQPos.sInUse)
+	end
+	return true
+end
+
+function DQMover:onBlocked()
+	logger:debug("onBlocked()")
+	local rSelf = DQMover:cast(self)
+	rSelf.turtle:tell("dig", rSelf.mMoveDir, rSelf:getActorRef())
+	return true
+end
+
+function DQMover:whenBlockedEventDigResult(pMessage, pData)
+	logger:debug("whenBlockedEventDigResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMover:cast(self)
+
+	if (pData == true) then
+		-- We've dug something, now wait a moment (in case gravel or sand is falling), and scan again
+		rSelf:setState("wait")
+	else
+		-- There was nothing to dig (or failed), so, attempt to scan again
+		rSelf:setState("scan")
+		rSelf.mTry = rSelf.mTry + 1
+		if (rSelf.mTry == 4) then
+			rSelf.owner:tell("moveResult", "Unable to dig after 4 attempts", rSelf:getActorRef())
+		end
+	end
+	return true
+end
+
+function DQMover:onWait()
+	logger:debug("onWait()")
+	local rSelf = DQMover:cast(self)
+	rSelf:getActorRef():tell("tick", nil, rSelf:getActorRef(), 0.5)
+	return true
+end
+
+function DQMover:whenWaitingEventTick(pMessage, pData)
+	logger:debug("whenWaitingEventTick(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMover:cast(self)
+	rSelf:setState("scan")
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	sConfig = pConfig
+	ActorSystem.actorCreate(DQMover, "/Mover")
+end

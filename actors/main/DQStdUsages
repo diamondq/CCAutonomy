@@ -1,0 +1,149 @@
+-- DQStdUsages
+
+StorageUsageClass = DQObject.class("StorageUsageClass", DQUsages.UsageClass)
+function StorageUsageClass:init(pID, pName, pInstanceClass)
+	self.super:init(pID, pName, pInstanceClass)
+end
+
+local BasicWoodenStorageInstanceClass = DQObject.class("BasicWoodenStorageInstanceClass", DQUsages.UsageInstanceClass)
+function BasicWoodenStorageInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function BasicWoodenStorageInstanceClass:getPlans()
+	return { "storage" }
+end
+
+local BasicWoodenStorageClass = DQObject.class("BasicWoodenStorageClass", StorageUsageClass)
+function BasicWoodenStorageClass:init()
+	self.super:init("BasicWoodenStorage", "Basic Wooden Storage", BasicWoodenStorageInstanceClass)
+end
+
+local TreeFarmInstanceClass = DQObject.class("TreeFarmInstanceClass", DQUsages.UsageInstanceClass)
+function TreeFarmInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function TreeFarmInstanceClass:getPlans()
+	return { "treefarm" }
+end
+
+local TreeFarmClass = DQObject.class("TreeFarmClass", DQUsages.UsageClass)
+function TreeFarmClass:init()
+	self.super:init("TreeFarm", "Tree Farm", TreeFarmInstanceClass)
+end
+
+local SimpleFloorInstanceClass = DQObject.class("SimpleFloorInstanceClass", DQUsages.UsageInstanceClass)
+function SimpleFloorInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function SimpleFloorInstanceClass:getPlans()
+	return { "simple" }
+end
+
+local SimpleFloorClass = DQObject.class("SimpleFloorClass", DQUsages.UsageClass)
+function SimpleFloorClass:init()
+	self.super:init("SimpleFloor", "Simple Floor", SimpleFloorInstanceClass)
+end
+
+local PlanterTreeFarmInstanceClass = DQObject.class("PlanterTreeFarmInstanceClass", DQUsages.UsageInstanceClass)
+function PlanterTreeFarmInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function PlanterTreeFarmInstanceClass:getPlans()
+	return { "planter_treefarm_1" }
+end
+
+local PlanterTreeFarmClass = DQObject.class("PlanterTreeFarmClass", DQUsages.UsageClass)
+function PlanterTreeFarmClass:init()
+	self.super:init("PlanterTreeFarm", "Planter Tree Farm", PlanterTreeFarmInstanceClass)
+end
+
+local GlassWellNWInstanceClass = DQObject.class("GlassWellNWInstanceClass", DQUsages.UsageInstanceClass)
+function GlassWellNWInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function GlassWellNWInstanceClass:getPlans()
+	return { "glass_well_NW" }
+end
+
+local GlassWellNWClass = DQObject.class("GlassWellNWClass", DQUsages.UsageClass)
+function GlassWellNWClass:init()
+	self.super:init("GlassWellNW", "Glass Well NW", GlassWellNWInstanceClass)
+end
+
+local GlassWellNEInstanceClass = DQObject.class("GlassWellNEInstanceClass", DQUsages.UsageInstanceClass)
+function GlassWellNEInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function GlassWellNEInstanceClass:getPlans()
+	return { "glass_well_NE" }
+end
+
+local GlassWellNEClass = DQObject.class("GlassWellNEClass", DQUsages.UsageClass)
+function GlassWellNEClass:init()
+	self.super:init("GlassWellNE", "Glass Well NE", GlassWellNEInstanceClass)
+end
+
+local GlassWellSEInstanceClass = DQObject.class("GlassWellSEInstanceClass", DQUsages.UsageInstanceClass)
+function GlassWellSEInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function GlassWellSEInstanceClass:getPlans()
+	return { "glass_well_SE" }
+end
+
+local GlassWellSEClass = DQObject.class("GlassWellSEClass", DQUsages.UsageClass)
+function GlassWellSEClass:init()
+	self.super:init("GlassWellSE", "Glass Well SE", GlassWellSEInstanceClass)
+end
+
+local GlassWellSWInstanceClass = DQObject.class("GlassWellSWInstanceClass", DQUsages.UsageInstanceClass)
+function GlassWellSWInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function GlassWellSWInstanceClass:getPlans()
+	return { "glass_well_SW" }
+end
+
+local GlassWellSWClass = DQObject.class("GlassWellSWClass", DQUsages.UsageClass)
+function GlassWellSWClass:init()
+	self.super:init("GlassWellSW", "Glass Well SW", GlassWellSWInstanceClass)
+end
+
+local CompactBaseInstanceClass = DQObject.class("CompactBaseInstanceClass", DQUsages.UsageInstanceClass)
+function CompactBaseInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function CompactBaseInstanceClass:getPlans()
+	return { "compact_base" }
+end
+
+local CompactBaseClass = DQObject.class("CompactBaseClass", DQUsages.UsageClass)
+function CompactBaseClass:init()
+	self.super:init("CompactBase", "Compact Base", CompactBaseInstanceClass)
+end
+
+local DenseFarmInstanceClass = DQObject.class("DenseFarmInstanceClass", DQUsages.UsageInstanceClass)
+function DenseFarmInstanceClass:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+	self.super:init(pUsage, pBaseID, pFloorID, pSegID, pVariant)
+end
+function DenseFarmInstanceClass:getPlans()
+	return { "dense_farm" }
+end
+
+local DenseFarmClass = DQObject.class("DenseFarmClass", DQUsages.UsageClass)
+function DenseFarmClass:init()
+	self.super:init("DenseFarm", "Dense Farm", DenseFarmInstanceClass)
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	DQUsages.registerUsage(BasicWoodenStorageClass:new())
+	DQUsages.registerUsage(TreeFarmClass:new())
+	DQUsages.registerUsage(SimpleFloorClass:new())
+	DQUsages.registerUsage(CompactBaseClass:new())
+	DQUsages.registerUsage(DenseFarmClass:new())
+	DQUsages.registerUsage(PlanterTreeFarmClass:new())
+	DQUsages.registerUsage(GlassWellNWClass:new())
+	DQUsages.registerUsage(GlassWellNEClass:new())
+	DQUsages.registerUsage(GlassWellSWClass:new())
+	DQUsages.registerUsage(GlassWellSEClass:new())
+end

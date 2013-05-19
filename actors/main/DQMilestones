@@ -1,0 +1,108 @@
+-- Milestones
+
+local debug = true
+local sTimeout = 120
+
+local logger = DQDebug.getDebugLogger("DQMilestones", debug)
+
+local DQMilestones = DQObject.class("DQMilestones", ActorSystem.TypedActor)
+function DQMilestones:preStart()
+	local rSelf = DQMilestones:cast(self)
+	rSelf.vsuper:preStart()
+end
+
+-- Lookup milestones
+-- pData = { type="milestoneType" }
+-- Result lookupResult = Data
+function DQMilestones:eventLookupMilestones(pMessage, pData)
+	logger:debug("eventLookupMilestone(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMilestones:cast(self)
+	if (type(pData) ~= "table") then
+		rSelf:getSender():tell("lookupFailed", "Data isn't a table", rSelf:getActorRef())
+		return true
+	end
+	
+	local data = DQStore.get({ "milestones", "data", pData.type}, "info", {})
+	rSelf:getSender():tell("lookupResult", data, rSelf:getActorRef())
+	return true
+end
+
+-- Store a new milestone
+-- pData { type="milestoneType", loc={ x, y, z, d, f } }
+-- f is the facing of the direction of the interesting point, it's either 'f', 'u', 'd' or '?'
+function DQMilestones:eventStoreMilestone(pMessage, pData)
+	logger:debug("eventStoreMilestone(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMilestones:cast(self)
+	local data = DQStore.get({ "milestones", "data", pData.type }, "info", {})
+	local m = false
+	for _,v in ipairs(data) do
+		if ((v.loc[1] == tostring(pData.loc[1])) and (v.loc[2] == tostring(pData.loc[2]))
+			and (v.loc[3] == tostring(pData.loc[3]))) then
+			m = v
+			break
+		end
+	end
+	if (m == false) then
+		local c = DQStore.get("milestones", "count", 0)
+		c = tonumber(c)
+		c = c + 1
+		m = { id=c, loc={ pData.loc[1], pData.loc[2], pData.loc[3], pData.loc[4] }, f=pData.loc[5] }
+		table.insert(data, m)
+		DQStore.store( "milestones", "count", c)
+		DQStore.store( { "milestones", "status", pData.type }, c, { status="available", updated=os.clock() })
+	end
+	DQStore.store( { "milestones", "data", pData.type }, "info", data)
+	local s = rSelf:getSender()
+	if (type(s) ~= "nil") then
+		rSelf:getSender():tell("ack", m.id, rSelf:getActorRef())
+	end
+	return true
+end
+
+-- Get the status of a given milestone
+-- pData = { type="milestoneType", id="id" }
+-- Returns status => { type="milestoneType", id="id", status="status", updated="updatedtime" }
+function DQMilestones:eventGetStatus(pMessage, pData)
+	logger:debug("eventGetStatus(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMilestones:cast(self)
+	local s = DQStore.get({ "milestones", "status", pData.type }, tonumber(pData.id), { status="unknown", updated=os.clock() })
+	rSelf:getSender():tell("status", { type=pData.type, id=pData.id, status=s.status, updated=s.updated }, rSelf:getActorRef())
+	return true
+end
+
+-- pData = { type="milestoneType", id="id", status="status"}
+-- returns ack => nil
+function DQMilestones:eventSetStatus(pMessage, pData)
+	logger:debug("eventSetStatus(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMilestones:cast(self)
+	DQStore.store({ "milestones", "status", pData.type }, tonumber(pData.id), { status=pData.status, updated=os.clock() })
+	s = rSelf:getSender()
+	if (type(s) ~= "nil") then
+		s:tell("ack", nil, rSelf:getActorRef())
+	end
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	local r = ActorSystem.actorCreate(DQMilestones, "/Milestones")
+	local i = false
+	if (i == true) then
+		local b = "bcftb"
+		if (b == "bc") then
+			r:tell("storeMilestone", { type="inventory", loc={ -1005, 1001, 14, 4 } }, nil)
+			r:tell("storeMilestone", { type="inventory", loc={ -1005, 1003, 14, 4 } }, nil)
+			r:tell("storeMilestone", { type="inventory", loc={ -1005, 1005, 14, 4 } }, nil)
+			r:tell("setStatus", { type="inventory", id="1", status="inuse" }, nil)
+			r:tell("storeMilestone", { type="parking", loc={ -1003, 1001, 18, 3 } }, nil)
+			r:tell("storeMilestone", { type="parking", loc={ -1003, 1002, 18, 3 } }, nil)
+			r:tell("storeMilestone", { type="parking", loc={ -1003, 1003, 18, 3 } }, nil)
+			r:tell("storeMilestone", { type="parking", loc={ -1003, 1004, 18, 3 } }, nil)
+			r:tell("storeMilestone", { type="parking", loc={ -1003, 1005, 18, 3 } }, nil)
+			r:tell("storeMilestone", { type="parking", loc={ -1003, 1006, 18, 3 } }, nil)
+		elseif (b == "aqua") then
+			r:tell("storeMilestone", { type="parking", loc={ 393, 792, 66, 3 } }, nil)
+		elseif (b == "bcftb") then
+			r:tell("storeMilestone", { type="parking", loc={ 997, 998, 13, 1 } }, nil)
+		end
+	end
+end

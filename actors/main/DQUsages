@@ -1,0 +1,97 @@
+-- DQUsages
+
+local sUsageIDsByName = {}
+local sUsageAddonIDsByUsageID = {}
+local sUsagesByID = {}
+
+local debug = true
+local logger = DQDebug.getDebugLogger("DQUsages", debug)
+
+UsageClass = DQObject.class("UsageClass")
+function UsageClass:init(pID, pName, pAddOn)
+	self.mID = pID
+	self.mName = pName
+	self.addOn = pAddOn
+	self.super:init()
+end
+function UsageClass:getID()
+	return self.mID
+end
+function UsageClass:getName()
+	return self.mName
+end
+function UsageClass:getAddon()
+	return self.addOn
+end
+function UsageClass:getProcessedPlan()
+	logger:debug("Opening /plans/%s", DQDebug.serialize1(self.mID))
+	local h = fs.open("/plans/" .. self.mID, "r")
+	local planText = h.readAll()
+	h.close()
+	logger:debug("Got content")
+	local plan = textutils.unserialize(planText)
+	if (type(plan) ~= "table") then
+		logger:error("Unable to process the plan located at %s. Value=%s", DQDebug.serialize2("/plans/" .. self.mID, planText))
+		error("Failed to process plan")
+	end
+	logger:debug("Deserialized")
+	local processedPlan = DQPlanCompiler.process(plan)
+	return processedPlan
+end
+
+function registerUsage(pUsage)
+	local id = pUsage:getID()
+	local name = pUsage:getName()
+	local addon = pUsage:getAddon()
+	sUsagesByID[id] = pUsage
+	if (type(addon) == "string") then
+		if (type(sUsageAddonIDsByUsageID[addon]) == "nil") then
+			sUsageAddonIDsByUsageID[addon] = {}
+		end
+		table.insert(sUsageAddonIDsByUsageID[addon], id)
+	else
+		if (type(name) == "nil") then
+			name = id
+		end
+		sUsageIDsByName[name] = id
+	end
+end
+
+function getUsageIDsByName()
+	return sUsageIDsByName
+end
+
+function getUsageByID(pID)
+	return sUsagesByID[pID]
+end
+
+function getAddonsByUsageID(pID)
+	if (type(sUsageAddonIDsByUsageID[pID]) == "nil") then
+		return {}
+	else
+		return sUsageAddonIDsByUsageID[pID]
+	end
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	local flist = fs.list("/plans")
+	for _,v in ipairs(flist) do
+		local f = fs.open("/plans/" .. v, "r")
+		local r = f.readAll()
+		f.close()
+		local p = textutils.unserialize(r)
+		local n
+		if ((type(p.info) == "nil") or (type(p.info.name) == "nil")) then
+			n = v
+		else
+			n = p.info.name
+		end
+		local a
+		if ((type(p.info) == "nil") or (type(p.info.name) == "nil")) then
+			a = nil
+		else
+			a = p.info.addon
+		end
+		registerUsage(UsageClass:new(v, n, a))
+	end
+end

@@ -1,0 +1,415 @@
+local actorMap = {}
+
+local actorNameMap = {}
+setmetatable(actorNameMap, { __mode = 'v' })
+
+local thisMachine = tostring(os.computerID())
+local thisType
+
+local actorDebug = false
+
+local acLogger = DQDebug.getDebugLogger("ActorContext", actorDebug)
+local arLogger = DQDebug.getDebugLogger("ActorRef", actorDebug)
+local aLogger = DQDebug.getDebugLogger("ActorClass", actorDebug)
+local asLogger = DQDebug.getDebugLogger("ActorSystem", actorDebug)
+local taLogger = DQDebug.getDebugLogger("TypedActor", actorDebug)
+
+----------------------------------------------------------------
+-- Top Class definitions
+----------------------------------------------------------------
+
+ActorContext = DQObject.class("ActorContext")
+ActorClass = DQObject.class("ActorClass")
+TypedActor = DQObject.class("TypedActor", ActorClass)
+ActorRef = DQObject.class("ActorRef")
+
+----------------------------------------------------------------
+-- Internal functions
+----------------------------------------------------------------
+
+-- Internal path table
+-- c = complete path, h = host_id, t = host type, p = relative path, is = is Remote, r = is relative
+-- { c = "host_id@type:/parent/child", h="host_id", t="type", p="/parent/child", r=false, is=false }
+
+local function parsePath(pPath)
+	local t = type(pPath)
+	if (t == "function") then
+		pPath = pPath()
+		t = type(pPath)
+	end
+	if (t == "table") then
+		return pPath
+	elseif (t == "nil") then
+		return nil
+	else
+		local o1 = string.find(pPath, ":", 1, true)
+		local r = { c = pPath }
+		if (type(o1) == "nil") then
+			r.p = pPath
+			r.r = true
+		else
+			local m = string.sub(pPath, 1, o1 - 1) .. ""
+			local o2 = string.find(m, "@", 1, true)
+			if (type(o2) == "nil") then
+				if (string.len(m) > 0) then
+					r.h = m
+				end
+			else
+				local lh = string.sub(m, 1, o2 - 1) .. ""
+				if (string.len(lh) > 0) then
+					r.h = lh
+				end
+				local lt = string.sub(m, o2 + 1) .. ""
+				if (string.len(lt) > 0) then
+					r.t = lt
+				end
+			end
+			if (type(r.h) ~= "nil") then
+				if (r.h == thisMachine) then
+					r.is = false
+				else
+					r.is = true
+				end
+			elseif (type(r.t) ~= "nil") then
+				r.is = true
+			end
+			r.p = string.sub(pPath, o1 + 1) .. ""
+			if ((type(r.h) ~= "nil") and (type(r.t) ~= "nil") and (type(r.is) ~= "nil")) then
+				r.r = false
+			else
+				r.r = true
+			end
+		end
+		return r
+	end
+end
+
+local function getRefPath(pActorRef, pForDebugging)
+	if (type(pActorRef) == "nil") then
+		if ((type(pForDebugging) ~= "boolean") or (pForDebugging == true)) then
+			return "nil"
+		else
+			return nil
+		end
+	else
+		if (type(pActorRef.r) == "nil") then
+			DQDebug.dump(pActorRef, "Bad ActorRef")
+			error("actorref r is nil")
+		end
+		return pActorRef.r.c
+	end
+end
+
+local function resolvePath(pRelPath, pParentRef)
+	local rd = parsePath(pRelPath)
+	if (rd.r == false) then
+		asLogger:debug("resolvePath: %s -> %s", DQDebug.serialize2(pRelPath, rd))
+		return rd
+	end
+	if ((type(rd.h) == "nil") and (type(rd.t) == "nil")) then
+		rd.h = thisMachine
+		rd.is = false
+	end
+	if ((type(rd.t) == "nil") and (rd.h == thisMachine)) then
+		rd.t = thisType
+	end
+	if (type(pParentRef) ~= "nil") then
+		if (string.sub(rd.p, 1, 1) ~= "/") then
+			rd.p = pParentRef.r.p .. "/" .. rd.p
+		end
+	end
+	-- Rebuild the absolute path
+	if (type(rd.t) == "nil") then
+		rd.c = rd.h .. ":" .. rd.p
+	else
+		if (type(rd.h) == "nil") then
+			rd.c = "@" .. rd.t .. ":" .. rd.p
+		else
+			rd.c = rd.h .. "@" .. rd.t .. ":" .. rd.p
+		end
+	end
+	rd.r = false
+	asLogger:debug("resolvePath: %s -> %s", DQDebug.serialize2(pRelPath, rd))
+	return rd
+end
+
+----------------------------------------------------------------
+----- ActorContext
+----------------------------------------------------------------
+
+function ActorContext:init(pActorRef)
+	self.r = pActorRef
+	self.s = nil
+end
+function ActorContext:actorFor(pActorName)
+	return ActorSystem.actorFor(pActorName)
+end
+function ActorContext:getActorRef()
+	return self.r
+end
+function ActorContext:getSender()
+	return self.s
+end
+function ActorContext:getParent()
+	return self.r:getParent()
+end
+function ActorContext:actorCreate(pActorClass, pActorName)
+	return ActorSystem.actorCreate(pActorClass, pActorName, self.r)
+end
+function ActorContext:stop(pActorRef)
+	ActorSystem.stop(pActorRef)
+end
+
+----------------------------------------------------------------
+----- ActorClass
+----------------------------------------------------------------
+
+-- All actors must extend the ActorClass
+function ActorClass:init(pContext)
+	self.mContext = pContext
+end
+function ActorClass:preStart()
+end
+ActorClass:virtual("preStart")
+
+function ActorClass:postStop()
+end
+ActorClass:virtual("postStop")
+function ActorClass:postRestart()
+end
+ActorClass:virtual("postRestart")
+function ActorClass:preRestart()
+end
+ActorClass:virtual("preRestart")
+function ActorClass:getActorRef()
+	local rSelf = ActorClass:cast(self)
+	return rSelf.mContext:getActorRef()
+end
+function ActorClass:getContext()
+	local rSelf = ActorClass:cast(self)
+	return rSelf.mContext
+end
+function ActorClass:getSender()
+	local rSelf = ActorClass:cast(self)
+	return rSelf.mContext:getSender()
+end
+
+-- All messages between actors are send to the receive function
+function ActorClass:receive(pMessage, pData)
+end
+ActorClass:virtual("receive")
+
+----------------------------------------------------------------
+----- TypedActor
+----------------------------------------------------------------
+
+function TypedActor:receive(pMessage, pData)
+	local rBase = self.baseinst
+	local eventFuncs = DQUtils.lookupFunction(rBase, "event", nil, nil, pMessage)
+	taLogger:debug("[%s] calling %s (given %s)", DQDebug.serialize3(self, eventFuncs, pMessage))
+	for _,v in ipairs(eventFuncs) do
+		local r = rBase[v](rBase, pMessage, pData)
+		if ((type(r) == "boolean") and (r == true)) then
+			break
+		end
+	end
+end
+function TypedActor:eventUnhandled(pMessage, pData)
+	taLogger:info("[%s] %s received unhandled event (%s with %s)", DQDebug.serialize4(self, 
+		function() return getRefPath(self:getActorRef()) end, pMessage, pData))
+end
+
+----------------------------------------------------------------
+----- ActorRef
+----------------------------------------------------------------
+
+-- Code should not hold a direct reference to an Actor, but instead to ActorRef's
+function ActorRef:init(pActorPath, pParentRef)
+	self.r = resolvePath(pActorPath, nil)
+	self.p = pParentRef
+end
+function ActorRef:tell(pMessage, pData, pSender, pDelay)
+	arLogger:debug("(%s):tell(%s, %s, %s, %s)", DQDebug.serialize5(
+		function () return getRefPath(self) end, pMessage, pData, function() return getRefPath(pSender) end, pDelay ) )
+	if ((type(pDelay) == "number") and (pDelay > 0)) then
+		local r = self
+		DQUtils.registerOneTimeEventCallback("timer", function()
+			r:tell(pMessage, pData, pSender, 0)
+		end, nil, os.startTimer(pDelay))
+	else
+		if (self.r.is == false) then
+			DQUtils.pushEventQueue("DQActor_Message", { self, pMessage, pData, pSender })
+		else
+			DQUtils.pushEventQueue("DQActor_RemoteMessage", { self, pMessage, pData, pSender })
+		end
+	end
+end
+function ActorRef:getPath()
+	return self.r.c
+end
+function ActorRef:getHostName()
+	return self.r.h .. "@" .. self.r.t
+end
+function ActorRef:getParent()
+	return self.p
+end
+function ActorRef:compare(pOtherActorRef)
+	return self:getPath() == pOtherActorRef:getPath()
+end
+
+----------------------------------------------------------------
+----- ActorSystem
+----------------------------------------------------------------
+
+-- Return an ActorRef
+function actorFor(pActorPath, pParentRef)
+	asLogger:debug("actorFor(%s, %s)", DQDebug.serialize2(pActorPath, pParentRef))
+	
+	local r = resolvePath(pActorPath, pParentRef)
+	
+	local actorRef = actorNameMap[r.c]
+	if (type(actorRef) == "nil") then
+		actorRef = ActorRef:new(r, pParentRef)
+		actorNameMap[r.c] = actorRef
+	end
+	
+	return actorRef
+end
+
+-- Creates a new actor
+function actorCreate(pActorClass, pActorPath, pParentRef)
+	asLogger:debug("actorCreate(..., %s, %s)", DQDebug.serialize2(pActorPath, pParentRef))
+	
+	-- Create an actor ref
+	local ref = ActorSystem.actorFor(pActorPath, pParentRef)
+	
+	-- Push an event for later construction of the actual actor
+	DQUtils.pushEventQueue("DQActor_Construct", { ref, pActorClass } )
+
+	return ref
+end
+
+function actorStop(pActorRef)
+	local a = actorMap[pActorRef.r.c]
+	if (type(a) ~= "nil") then
+		actorMap[pActorRef.r.c] = nil
+		a:postStop()
+	end
+	actorNameMap[pActorRef.r.c] = nil
+end
+
+local function finishCreation(pActorRef, pActorClass)
+	asLogger:debug("finishCreation(%s, ...)", DQDebug.serialize1(function() return getRefPath(pActorRef) end))
+	local context = ActorContext:new(pActorRef)
+	local actor = pActorClass:new(context)
+	actorMap[pActorRef.r.c] = actor
+	
+	-- Now start the lifecycle
+	actor:preStart()
+end
+
+local function deliverMessage(pTarget, pMessage, pData, pSender)
+	local m = DQDebug.serialize4(function() return getRefPath(pTarget) end, pMessage, pData,
+		function () return getRefPath(pSender) end )
+	asLogger:debug("deliverMessage(%s, %s, %s, %s)", m)
+	
+	-- Look up the target to find the actual actor
+	local actorTarget = actorMap[pTarget.r.c]
+	
+	if (type(actorTarget) == "nil") then
+		asLogger:info("Actor doesn't exist. Message is being discarded. deliverMessage(%s, %s, %s, %s)", m)
+		return
+	end
+	
+	-- Send the message
+	local targetContext = actorTarget:getContext()
+	targetContext.s = pSender
+	actorTarget:receive(pMessage, pData)
+end
+
+local function deliverRemoteMessage(pTarget, pMessage, pData, pSender)
+	local m = DQDebug.serialize4(function() return getRefPath(pTarget) end, pMessage, pData,
+		function () return getRefPath(pSender) end)
+	asLogger:debug("deliverRemoteMessage(%s, %s, %s, %s)", m)
+	
+	local ids
+	if (type(pTarget.r.h) == "nil") then
+		-- Get the current location
+		local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z" } )
+		if ((type(loc) == "nil") or (type(loc[1]) == "nil")) then
+			ids = DQNet.getIDByType(pTarget.r.t)
+		else
+			loc[1] = tonumber(loc[1])
+			loc[2] = tonumber(loc[2])
+			loc[3] = tonumber(loc[3])
+			ids = {}
+			ids[1] = DQNet.getIDByTypeAndDist(pTarget.r.t, loc[1], loc[2], loc[3])
+			if (ids[1] == false) then
+				ids = {}
+			end
+		end
+		-- Update the reference
+		if (#ids > 0) then
+			pTarget.r.h = ids[1]
+			pTarget.r.r = true
+			pTarget.r = resolvePath(pTarget.r)
+		end
+	else
+		ids = { tonumber(pTarget.r.h) }
+	end
+	if (#ids > 0) then
+		local ss = getRefPath(pSender, false)
+		local ts = getRefPath(pTarget, false)
+		local m = textutils.serialize({ t=ts, m=pMessage, d=pData, s=ss })
+		DQNet.sendMessage(ids[1], "DQRemoteActor_Message", m)
+	else
+		local pFunc = function()
+			DQStore.deregisterChangeCallback({"network", "stats"}, "route_count", pFunc)
+			deliverRemoteMessage(pTarget, pMessage, pData, pSender)
+		end
+		asLogger:debug("Unable to find a route to the actor. Waiting until a new route appears")
+		DQStore.registerChangeCallback({"network", "stats"}, "route_count", pFunc)
+	end
+end
+
+-- This is called on every event, even ones we don't care about
+local function handleEvent(pEvent, pParam1, pParam2, pParam3, pParam4)
+	if (pEvent == "DQActor_Message") then
+		eventData = DQUtils.getEventQueue(pParam1)
+		deliverMessage(eventData[1], eventData[2], eventData[3], eventData[4])
+		return true
+	elseif (pEvent == "DQActor_Construct") then
+		eventData = DQUtils.getEventQueue(pParam1)
+		finishCreation(eventData[1], eventData[2])
+		return true
+	elseif (pEvent == "DQActor_RemoteMessage") then
+		eventData = DQUtils.getEventQueue(pParam1)
+		deliverRemoteMessage(eventData[1], eventData[2], eventData[3], eventData[4])
+		return true
+	end
+	return false
+end
+
+local function handleRemoteMessage(pUnused, pType, pMessage, pSenderID, pReplyTo, pInReplyTo, pComputer, pX, pY, pZ)
+	asLogger:debug("handleRemoteMessage(%s, %s)", DQDebug.serialize2(pMessage, pSenderID))
+	local dataObj = textutils.unserialize(pMessage)
+	local message = dataObj.m
+	local data = dataObj.d
+	local senderSS = dataObj.s
+	local targetSS = dataObj.t
+	
+	-- Construct / Reconstruct the ActorRefs
+	
+	local targetRef = ActorSystem.actorFor(targetSS)
+	local senderRef = ActorSystem.actorFor(senderSS)
+	
+	-- Now send the message to the appropriate target
+	
+	targetRef:tell(message, data, senderRef)
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	thisType = pConfig.computer_type
+	table.insert(pEventHandlers, 1, handleEvent)
+	DQNet.registerMessageCallback("DQRemoteActor_Message", handleRemoteMessage)
+end

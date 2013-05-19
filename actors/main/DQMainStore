@@ -1,0 +1,23 @@
+local debug = true
+local logger = DQDebug.getDebugLogger("DQMainStore", debug)
+
+local DQMainStore = DQObject.class("DQMainStore", ActorSystem.TypedActor)
+function DQMainStore:preStart()
+	local rSelf = DQMainStore:cast(self)
+	rSelf.vsuper:preStart()
+end
+
+-- pData => { id=, key1= }
+function DQMainStore:eventGetAll(pMessage, pData)
+	logger:debug("eventGetAll(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DQMainStore:cast(self)
+	local s = rSelf:getSender()
+	local r = DQStore.getAll(pData.key1)
+	local ar = { id=pData.id, data=r }
+	rSelf:getSender():tell("getAllResult", ar, rSelf:getActorRef())
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	ActorSystem.actorCreate(DQMainStore, "/Store")
+end

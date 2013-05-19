@@ -1,0 +1,538 @@
+-- DQPlanCompiler
+
+local debug = false
+local logger = DQDebug.getDebugLogger("DQPlanCompiler", debug)
+
+local sNormalActions = { "place-cube", "place", "variable", "loop", "move", "break", "moveblock", "moveblock-cube" }
+local sOnActions = { "addchests" }
+local sBitPatterns = { 1, 2, 4, 8, 16, 32, 64, 128 }
+
+local function reportActionError(pError, pPlan, pActionPath)
+	local message
+	if (type(pError) == "nil") then
+		message = "A nil message was provided to reportActionError"
+	else
+		message = pError
+		if ((type(pPlan) ~= "nil") and (type(pPlan.info) ~= "nil") and (type(pPlan.info.name) ~= "nil")) then
+			message = message .. string.char(10) .. "Plan: " .. pPlan.info.name
+		end
+		if (type(pActionPath) == "table") then
+			for _,v in ipairs(pActionPath) do
+				message = message .. string.char(10) .. "At " .. tostring(v.offset)
+				if (tonumber(v.offset) == 1) then
+					message = message .. "st"
+				elseif (tonumber(v.offset) == 2) then
+					message = message .. "nd"
+				elseif (tonumber(v.offset) == 3) then
+					message = message .. "rd"
+				else
+					message = message .. "th"
+				end
+				message = message .. " action"
+				if (type(v.type) ~= "nil") then
+					message = message .. " (" .. v.type .. ")"
+				end
+			end
+		end
+	end
+	DQDebug.writeToLog(message)
+	return nil
+end
+
+local function reportExpressionError(pError, pAttrName, pPlan, pActionPath)
+	local message
+	if (type(pError) == "nil") then
+		message = "A nil message was provided to reportExpressionError"
+	else
+		message = pError
+		if (type(pAttrName) ~= "nil") then
+			message = message .. string.char(10) .. "Attribute: " .. tostring(pAttrName)
+		end
+	end
+	return reportActionError(message, pPlan, pActionPath)
+end
+
+-- pExpect should be "s" for string or "n" for number
+local function evalSym(pSymbol, pVars, pExpect, pAttrName, pPlan, pActionPath)
+-- DQDebug.dump({pSymbol=pSymbol, pVars=pVars, pExpect=pExpect}, "evalSym")
+	if (type(pSymbol) == "nil") then
+		return reportExpressionError("A nil symbol was provided", pAttrName, pPlan, pActionPath)
+	end
+	local s = tostring(pSymbol)
+	if ((string.sub(s, 1, 1) == "\"") and (string.sub(s, -1) == "\"")) then
+		local r = string.sub(s, 2, -2) .. ""
+		if (pExpect == "s") then
+			return r
+		elseif (pExpect == "n") then
+			local rn = tonumber(r)
+			if (type(rn) == "number") then
+				return rn
+			else
+				return reportExpressionError("Expected a number, got " .. r, pAttrName, pPlan, pActionPath)
+			end
+		elseif (pExpect == "b") then
+			if (r == "true") then
+				return true
+			elseif (r == "false") then
+				return false
+			else
+				return reportExpressionError("Expected a boolean, got " .. r, pAttrName, pPlan, pActionPath)
+			end
+		end
+	end
+	local n = tonumber(s)
+	if (type(n) == "number") then
+		if (pExpect == "s") then
+			return tostring(n)
+		elseif (pExpect == "n") then
+			return n
+		elseif (pExpect == "b") then
+			return reportExpressionError("Expected a boolean, got " .. r, pAttrName, pPlan, pActionPath)
+		end
+	end
+	-- It's a variable
+	local v = pVars[s]
+	if (type(v) == "nil") then
+		return reportExpressionError("No variable called " .. s, pAttrName, pPlan, pActionPath)
+	end
+	if (pExpect == "s") then
+		return tostring(v)
+	elseif (pExpect == "n") then
+		local vn = tonumber(v)
+		if (type(vn) == "number") then
+			return vn
+		else
+			return reportExpressionError("Expected a number, got a variable " .. s .. " with a value of " .. v, pAttrName, pPlan, pActionPath)
+		end
+	elseif (pExpect == "b") then
+		local vb = tostring(v)
+		if (vb == "true") then
+			return true
+		elseif (vb == "false") then
+			return false
+		else
+			return reportExpressionError("Expected a boolean, got a variable " .. s .. " with a value of " .. v, pAttrName, pPlan, pActionPath)
+		end
+	end
+end
+
+local function evaluate(pData, pVars, pAttrName, pPlan, pActionPath)
+	-- Special handling to delay processing of children until later
+	if (type(pData) == "table") then
+		return pData
+	end
+--DQDebug.dump({pData=pData, pVars=pVars,pAttrName=pAttrName}, "evaluate")
+	local d = tostring(pData)
+	if (string.len(d) < 4) then
+		return d
+	end
+	local s,e,r = string.find(d, "^f+(%b())$")
+	if (type(r) == "nil") then
+		return d
+	end
+	local expr = string.sub(r, 2, -2)
+	local l
+	-- plus
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*%+%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ln = evalSym(l, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (ln == nil) then
+			return nil
+		end
+		local rn = evalSym(r, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (rn == nil) then
+			return nil
+		end
+		return ln + rn
+	end
+	-- minus
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*%-%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ln = evalSym(l, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (ln == nil) then
+			return nil
+		end
+		local rn = evalSym(r, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (rn == nil) then
+			return nil
+		end
+		return ln - rn
+	end
+	-- multiply
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*%*%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ln = evalSym(l, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (ln == nil) then
+			return nil
+		end
+		local rn = evalSym(r, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (rn == nil) then
+			return nil
+		end
+		return ln * rn
+	end
+	-- divide
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*%/%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ln = evalSym(l, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (ln == nil) then
+			return nil
+		end
+		local rn = evalSym(r, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (rn == nil) then
+			return nil
+		end
+		return ln / rn
+	end
+	-- concatenate
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*%.%.%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ls = evalSym(l, pVars, "s", pAttrName, pPlan, pActionPath)
+		if (ls == nil) then
+			return nil
+		end
+		local rs = evalSym(r, pVars, "s", pAttrName, pPlan, pActionPath)
+		if (rs == nil) then
+			return nil
+		end
+		return ls .. rs
+	end
+	-- <=
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*<=%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ln = evalSym(l, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (ln == nil) then
+			return nil
+		end
+		local rn = evalSym(r, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (rn == nil) then
+			return nil
+		end
+		return ln <= rn
+	end
+	-- >=
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*>=%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ln = evalSym(l, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (ln == nil) then
+			return nil
+		end
+		local rn = evalSym(r, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (rn == nil) then
+			return nil
+		end
+		return ln >= rn
+	end
+	-- <
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*<%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ln = evalSym(l, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (ln == nil) then
+			return nil
+		end
+		local rn = evalSym(r, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (rn == nil) then
+			return nil
+		end
+		return ln < rn
+	end
+	-- >
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*>%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ln = evalSym(l, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (ln == nil) then
+			return nil
+		end
+		local rn = evalSym(r, pVars, "n", pAttrName, pPlan, pActionPath)
+		if (rn == nil) then
+			return nil
+		end
+		return ln > rn
+	end
+	-- ==
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*==%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ls = evalSym(l, pVars, "s", pAttrName, pPlan, pActionPath)
+		if (ls == nil) then
+			return nil
+		end
+		local rs = evalSym(r, pVars, "s", pAttrName, pPlan, pActionPath)
+		if (rs == nil) then
+			return nil
+		end
+		return ls == rs
+	end
+	-- ~=
+	s,e,l,r = string.find(expr, "^%s*(%S+)%s*~=%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ls = evalSym(l, pVars, "s", pAttrName, pPlan, pActionPath)
+		if (ls == nil) then
+			return nil
+		end
+		local rs = evalSym(r, pVars, "s", pAttrName, pPlan, pActionPath)
+		if (rs == nil) then
+			return nil
+		end
+		return ls ~= rs
+	end
+	-- Simple symbol
+	s,e,l = string.find(expr, "^%s*(%S+)%s*$")
+	if (type(l) ~= "nil") then
+		local ls = evalSym(l, pVars, "s", pAttrName, pPlan, pActionPath)
+		if (ls == nil) then
+			return nil
+		end
+		return ls
+	end
+	return nil
+end
+
+local function processActions(pPlan, pValidActions, pActionList, pActionPath, pCompiledPlan, pCompiledActionList, pVars)
+-- DQDebug.dump({pActionList=pActionList, pVars=pVars}, "processActions")
+	table.insert(pActionPath, { offset = 0, type = false })
+	for k,v in ipairs(pActionList) do
+		pActionPath[#pActionPath].offset = k
+		pActionPath[#pActionPath].type = v.type
+		if (type(v.type) == "nil") then
+			return reportActionError("No type attribute found", pPlan, pActionPath)
+		end
+		-- Validate against the list of normal actions
+		local found = false
+		for k2,v2 in ipairs(pValidActions) do
+			if (v2 == v.type) then
+				found = true
+				break
+			end
+		end
+		if (found == false) then
+			return reportActionError("The type is not supported", pPlan, pActionPath)
+		end
+		-- Process meta-data
+		local activateVal = true
+		if (type(v.activate) ~= "nil") then
+			local ors
+			if (type(v.activate) ~= "table") then
+				ors = { tostring(v.activate) }
+			else
+				ors = v.activate
+			end
+			activateVal = false
+			for _,v2 in ipairs(ors) do
+				local result = evaluate(v2, pVars, "activate", pPlan, pActionPath)
+				if (result == nil) then
+					return nil
+				end
+				if (tostring(result) == "true") then
+					activateVal = true
+					break
+				end
+			end
+		end
+		if (activateVal == true) then
+			-- Evaluate each of the attributes
+			local attrs = {}
+			for k2,v2 in pairs(v) do
+				if (k2 ~= "activate") then
+					local r = evaluate(v2, pVars, k2, pPlan, pActionPath)
+					if (r == nil) then
+						return
+					end
+					attrs[k2] = r
+				end
+			end
+			-- If it's an instruction action, then process it
+			if (attrs.type == "variable") then
+				if (type(attrs["name"]) == "nil") then
+					return reportActionError("The name attribute is required", pPlan, pActionPath)
+				end
+				if (type(attrs["value"]) == "nil") then
+					return reportActionError("The value attribute is required", pPlan, pActionPath)
+				end
+				pVars[attrs["name"]] = attrs["value"]
+			elseif (attrs.type == "loop") then
+				if (type(attrs["first"]) == "nil") then
+					return reportActionError("The first attribute is required", pPlan, pActionPath)
+				end
+				local first = tonumber(attrs["first"])
+				if (type(first) ~= "number") then
+					return reportActionError("The first attribute must be a number", pPlan, pActionPath)
+				end
+				if (type(attrs["last"]) == "nil") then
+					return reportActionError("The last attribute is required", pPlan, pActionPath)
+				end
+				local last = tonumber(attrs["last"])
+				if (type(last) ~= "number") then
+					return reportActionError("The last attribute must be a number", pPlan, pActionPath)
+				end
+				if (type(attrs["name"]) == "nil") then
+					return reportActionError("The name attribute is required", pPlan, pActionPath)
+				end
+				if (type(attrs["actions"]) == "nil") then
+					return reportActionError("The actions attribute is required", pPlan, pActionPath)
+				end
+				local step = 1
+				if (type(attrs["step"]) ~= "nil") then
+					step = tonumber(attrs["step"])
+					if (type(step) ~= "number") then
+						return reportActionError("The step attribute must be a number", pPlan, pActionPath)
+					end
+				end
+				for k3=first,last,step do
+					pVars[attrs["name"]] = k3
+					-- Duplicate the arrays
+					local dActionPath = {}
+					for k4,v4 in ipairs(pActionPath) do
+						dActionPath[k4] = pActionPath[k4]
+					end
+					local dVars = {}
+					for k4,v4 in pairs(pVars) do
+						dVars[k4] = v4
+					end
+					if (processActions(pPlan, pValidActions, attrs["actions"], dActionPath, pCompiledPlan, pCompiledActionList, dVars) == nil) then
+						return nil
+					end
+				end
+			elseif (attrs.type == "moveblock") then
+				local nVal = sBitPatterns[tonumber(attrs.x)]
+				pCompiledPlan.world[tonumber(attrs.z)][tonumber(attrs.y)] = bit.bor(
+					pCompiledPlan.world[tonumber(attrs.z)][tonumber(attrs.y)], nVal)
+			elseif (attrs.type == "moveblock-cube") then
+				for ly=tonumber(attrs.y1),tonumber(attrs.y2) do
+					for lz=tonumber(attrs.z1),tonumber(attrs.z2) do
+						local nVal = 0
+						for lx=tonumber(attrs.x1),tonumber(attrs.x2) do
+							nVal = bit.bor(nVal, sBitPatterns[tonumber(lx)])
+						end
+						pCompiledPlan.world[lz][ly] = bit.bor(pCompiledPlan.world[lz][ly], nVal)
+					end
+				end
+			else
+				if (attrs.type == "place") then
+					local nVal = sBitPatterns[tonumber(attrs.x)]
+					pCompiledPlan.world[tonumber(attrs.z)][tonumber(attrs.y)] = bit.bor(
+						pCompiledPlan.world[tonumber(attrs.z)][tonumber(attrs.y)], nVal)
+					for _,v2 in ipairs(pCompiledPlan.blocks) do
+						if (v2.name == attrs.block) then
+							v2.count = v2.count + 1
+							break
+						end
+					end
+				elseif (attrs.type == "place-cube") then
+					local b
+					for _,v2 in ipairs(pCompiledPlan.blocks) do
+						if (v2.name == attrs.block) then
+							b = v2
+							break
+						end
+					end
+					for ly=tonumber(attrs.y1),tonumber(attrs.y2) do
+						for lz=tonumber(attrs.z1),tonumber(attrs.z2) do
+							local nVal = 0
+							for lx=tonumber(attrs.x1),tonumber(attrs.x2) do
+								nVal = bit.bor(nVal, sBitPatterns[tonumber(lx)])
+								b.count = b.count + 1
+							end
+							pCompiledPlan.world[lz][ly] = bit.bor(pCompiledPlan.world[lz][ly], nVal)
+						end
+					end
+				elseif (attrs.type == "break") then
+					local nVal = 255 - sBitPatterns[tonumber(attrs.x)]
+					pCompiledPlan.world[tonumber(attrs.z)][tonumber(attrs.y)] = bit.band(
+						pCompiledPlan.world[tonumber(attrs.z)][tonumber(attrs.y)], nVal)
+				elseif (attrs.type == "addchests") then
+					-- Iterate through each of the place or place-cubes to see if it's a chest
+					attrs.chests = {}
+					for _,v2 in ipairs(pCompiledPlan.actions) do
+						if ((v2.type == "place") and (v2.block == attrs.block)) then
+							local c = { x=v2.x, y=v2.y, z=v2.z, t=v2.chestType }
+							c.tx, c.ty, c.tz, c.tf, c.td = DQUtils.calculateTurtlePos(v2.x, v2.y, v2.z, v2.tx, v2.ty, v2.tz, v2.tf, v2.td)
+							table.insert(attrs.chests, c)
+						elseif ((v2.type == "place-cube") and (v2.block == attrs.block)) then
+							for lz=tonumber(v2.z1),tonumber(v2.z2) do
+								for ly=tonumber(v2.y1),tonumber(v2.y2) do
+									for lx=tonumber(v2.x1),tonumber(v2.x2) do
+										local c = { x=lx, y=ly, z=lz, t=v2.chestType }
+										c.tx, c.ty, c.tz, c.tf, c.td = DQUtils.calculateTurtlePos(lx, ly, lz, v2.tx, v2.ty, v2.tz, v2.tf, v2.td)
+										table.insert(attrs.chests, c)
+									end
+								end
+							end
+						end
+					end
+				end
+				-- Rebuild the action
+				table.insert(pCompiledActionList, attrs)
+			end
+		end
+		DQUtils.yield()
+	end
+	return pCompiledPlan
+end
+
+local function processBlocks(pPlan, pCompiledPlan)
+	for k,v in ipairs(pPlan.blocks) do
+		local b = { name = v.name, count = 0, blockname = v.blockname }
+		table.insert(pCompiledPlan.blocks, b)
+	end
+	return pCompiledPlan
+end
+
+local function compactWorld(pCompiledPlan)
+	local nWorld = ""
+	for z=1,10 do
+		local l = pCompiledPlan.world[z]
+		nWorld = nWorld
+			.. DQUtils.encode(l[1], l[2], l[3])
+			.. DQUtils.encode(l[4], l[5], l[6])
+			.. DQUtils.encode(l[7], l[8], 0)
+	end
+	pCompiledPlan.world = nWorld
+	return pCompiledPlan
+end
+
+function process(pPlan)
+	local compiledPlan = { info={}, blocks={}, actions={}, on={}, world={} }
+	-- Process info
+	if (type(pPlan.info) == "table") then
+		for k,v in pairs(pPlan.info) do
+			compiledPlan.info[k] = v
+		end
+	end
+	-- Process blocks
+	if (processBlocks(pPlan, compiledPlan) == nil) then
+		return nil
+	end
+	-- Process actions
+	local vars = { walls="none" }
+	for i=1,10 do
+		compiledPlan.world[i] = {}
+		for o=1,8 do
+			compiledPlan.world[i][o] = 0
+		end
+	end
+	if (processActions(pPlan, sNormalActions, pPlan.actions, {}, compiledPlan, compiledPlan.actions, vars) == nil) then
+		return nil
+	end
+	if (compactWorld(compiledPlan) == nil) then
+		return nil
+	end
+	-- Process on actions
+	if (type(pPlan.on) == "table") then
+		for sk,sv in pairs(pPlan.on) do
+			local sr = {}
+			compiledPlan.on[sk] = sr
+			for ek,ev in pairs(sv) do
+				local er = {}
+				sr[ek] = er
+				if (processActions(pPlan, sOnActions, ev, {}, compiledPlan, er, vars) == nil) then
+					return nil
+				end
+			end
+		end
+	end
+	logger:debug("Processed plan. Result %s", DQDebug.serialize1(compiledPlan))
+
+	-- Finished
+	return compiledPlan
+end
+

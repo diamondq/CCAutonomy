@@ -1,0 +1,150 @@
+-- DQInitialSetup
+
+local debug = true
+local logger = DQDebug.getDebugLogger("DQInitialSetup", debug)
+local sComputerPos = false
+local sCleanupRef = false
+local sCleanupCount = 0
+
+local DQInitialCleanup = DQObject.class("DQInitialCleanup", ActorSystem.TypedActor)
+function DQInitialCleanup:eventAck(pMessage, pData)
+	sCleanupCount = sCleanupCount - 1
+	if (sCleanupCount == 0) then
+		os.reboot()
+	end
+	return true
+end
+
+local function handleChoices(pContent, pChoice, pData, pMenuKey)
+	logger:debug("handleChoices(pContent, %s, %s, %s)", DQDebug.serialize3(pChoice, pData, pMenuKey))
+	if (pMenuKey == "InitialSetup") then
+		if (type(tonumber(pChoice)) == "number") then
+			DQStore.store("location", "gps_x", pChoice + 0)
+			DQUI.pushMenu("Computer_Y")
+		end
+	elseif (pMenuKey == "Computer_Y") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			if (type(tonumber(pChoice)) == "number") then
+				DQStore.store("location", "gps_y", pChoice + 0)
+				DQUI.pushMenu("Computer_Z")
+			end
+		end
+	elseif (pMenuKey == "Computer_Z") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			if (type(tonumber(pChoice)) == "number") then
+				DQStore.store("location", "gps_z", pChoice + 0)
+				-- Calculate the correct location of the computer
+				local f,sx,sy = DQPos.getSegData(DQStore.get("location", "gps_x", 0), DQStore.get("location", "gps_y", 0), DQStore.get("location", "gps_z", 0))
+				-- Should ask for the base design, but we'll just assume a +4, +4, +4 for now
+				local mx = (sx * 8) + 4
+				local my = (sy * 8) + 4
+				local mz = (f * 10) + 4
+				logger:debug("Pos: %s, %s, %s", DQDebug.serialize3(sx, sy, f))
+				local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z" }, { 0, 0, 0 })
+				if ((tonumber(loc[1]) == mx) and (tonumber(loc[2]) == my) and (tonumber(loc[3]) == mz)) then
+					DQUI.pushMenu("Computer_DIR")
+				else
+					sComputerPos = tostring(mx) .. ", " .. tostring(my) .. ", " .. tostring(mz)
+					DQUI.pushMenu("MoveComputer")
+				end
+			end
+		end
+	elseif (pMenuKey == "MoveComputer") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		end
+	elseif (pMenuKey == "Computer_DIR") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			if (type(tonumber(pChoice)) == "number") then
+				DQStore.store("location", "dir", pChoice + 0)
+				local f,sx,sy = DQPos.getSegData(DQStore.get("location", "gps_x", 0), DQStore.get("location", "gps_y", 0), DQStore.get("location", "gps_z", 0))
+				local s = { "segs", "floor" .. tostring(f), "segX" .. tostring(sx), "segY" .. tostring(sy) }
+				local w = DQPos.createEmptyWorldData(sx * 8, sy * 8, f * 10)
+				DQPos.setRelWorldData(w, 5, 5, 5, DQPos.sNeverBreak) -- Computer
+				DQPos.setRelWorldData(w, 6, 5, 5, DQPos.sNeverBreak) -- Disk drive
+				DQPos.setRelWorldData(w, 5, 5, 6, DQPos.sNeverBreak) -- Wireless
+				DQPos.setRelWorldData(w, 6, 5, 7, DQPos.sNeverBreak) -- Chest
+				DQPos.setRelWorldData(w, 6, 4, 6, DQPos.sNeverBreak) -- Chest
+				local ws = DQPos.compactWorldData(w)
+				DQStore.store(s, "world", ws)
+				DQStore.store(s, "status", "Clearing")
+				-- Set the initial milestones
+				local tx = tonumber(DQStore.get("location", "gps_x", 0)) + 1
+				local ty = tonumber(DQStore.get("location", "gps_y", 0))
+				local tz = tonumber(DQStore.get("location", "gps_z", 0)) + 1
+				local mref = ActorSystem.actorFor("/Milestones")
+				sCleanupCount = 3
+				mref:tell("storeMilestone", { type="parking", loc={ tx, ty, tz, 1 } }, sCleanupRef)
+				mref:tell("storeMilestone", { type="emptyInventory", loc={ tx, ty, tz, 1, "u" } }, sCleanupRef)
+				mref:tell("storeMilestone", { type="loadInventory", loc={ tx, ty, tz, 1, "?" } }, sCleanupRef)
+				-- Set the config
+				local tConfig = { computer_type="", hard_gps_x = tx, hard_gps_y = ty, hard_gps_z = tz, hard_dir = 1 }
+				-- Find the hard drive with the disk
+				local diskDrive
+				for k,v in ipairs(rs.getSides()) do
+					if (disk.isPresent(v)) then
+						if (disk.hasData(v)) then
+							if (disk.getLabel(v) == "DiamondQ") then
+								diskDrive = disk.getMountPath(v)
+							end
+						end
+					end
+				end
+				if (type(diskDrive) ~= "nil") then
+					DQUtils.writeConfig(tConfig, diskDrive .. "/config_bottom")
+					-- error("There must be a disk drive beside the computer")
+				end
+				DQStore.store("main", "setup", "true")
+			end
+		end
+	end
+end
+
+local function handleDialogs(pMenuKey)
+	if (pMenuKey == "InitialSetup") then
+		DQUI.displayDialog( { title=programTitle, upper="Define this computer's current location.",
+			type="field", field_instructions="Please enter the X / first co-ordinate of the computer:", on_complete="initialSetupChoices" } )
+		return true
+	elseif (pMenuKey == "Computer_Y") then
+		DQUI.displayDialog( { title=programTitle, upper="Define this computer's current location.",
+			type="field", field_instructions="Please enter the Z / second (not depth) co-ordinate of the computer:",
+			lower="(" .. DQStore.get("location", "gps_x", 0) .. ", ?, ?)", on_complete="initialSetupChoices", on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "Computer_Z") then
+		DQUI.displayDialog( { title=programTitle, upper="Define this computer's current location.",
+			type="field", field_instructions="Please enter the Y / third (depth) co-ordinate of the computer:",
+			lower="(" .. DQStore.get("location", "gps_x", 0) .. ", " .. DQStore.get("location", "gps_y", 0) .. ", ?)",
+			on_complete="initialSetupChoices", on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "MoveComputer") then
+		DQUI.displayDialog( { title=programTitle, type="info", upper="Please move this computer to (" .. sComputerPos .. ")" } )
+		return true
+	elseif (pMenuKey == "Computer_DIR") then
+		DQUI.displayDialog( { title=programTitle, upper="Define this computer's current location.",
+			type="list", list_instruction="Please enter the direction:", list_choices = { { label="North" }, { label="East" }, { label="South" }, { label="West" }}, on_complete = "initialSetupChoices", on_back = "BACK" } )
+		return true
+	end
+	return false
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	programTitle = pTitle
+	config = pConfig
+	local setupStr = DQStore.get("main", "setup", "false")
+	if (tostring(setupStr) == "true") then
+		logger:debug("Already set up")
+		return
+	else
+		DQUI.registerDialogCallback(handleDialogs)
+		DQUI.registerChoiceCallback("initialSetupChoices", handleChoices)
+		logger:debug("Pushing new InitialSetup menu")
+		sCleanupRef = ActorSystem.actorCreate(DQInitialCleanup, "/InitialSetupCleanup")
+		DQUI.pushMenu("InitialSetup")
+	end
+end

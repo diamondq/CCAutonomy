@@ -1,0 +1,176 @@
+-- DQGPS -- provides GPS capabilites
+
+local programTitle = ""
+local config = {}
+local lastGPSAttempt = 0
+
+local debug = false
+local logger = DQDebug.getDebugLogger("DQGPS", debug)
+
+local function receivePINGMessage(pUnused, pEvent, pModemSide, pSenderChannel, pReplyChannel, pMessage, pSenderDistance)
+	if (pMessage == "PING") then
+		logger:error("GPS Not supported")
+		-- if ((type(DQStore.get("location", "gps_x")) ~= "nil") and (type(DQStore.get("location", "gps_y")) ~= "nil") and (type(DQStore.get("location", "gps_z")) ~= "nil")) then
+		-- 	local x = DQStore.get("location", "gps_x") + 0
+		-- 	local y = DQStore.get("location", "gps_y") + 0
+		-- 	local z = DQStore.get("location", "gps_z") + 0
+		-- 	DQNet.sendNonDQMessage(pReplyChannel, textutils.serialize({x, z, y}))
+		-- end
+	end
+end
+
+local function gpsChange()
+	if ((type(tonumber(DQStore.get("location", "gps_x"))) == "number") and (type(tonumber(DQStore.get("location", "gps_y"))) == "number") and (type(tonumber(DQStore.get("location", "gps_z"))) == "number")) then	
+		-- GPS is available
+		DQUI.removeIssue("gpsChoice", "gpsFix")
+	else
+		if ((lastGPSAttempt == 0) or (lastGPSAttempt + 300 < os.clock())) then
+DQDebug.writeToLog("Issuing gpslocate")
+			-- We no longer have a GPS value. See if we can get a fix from everyone else first
+			local x,y,z = gps.locate(5, false)
+			lastGPSAttempt = os.clock()
+			DQUI.refresh(false)	-- the locate function has a pullEvents which will eat our messages, so we need to force the refresh
+			if (type(x) == "nil") then
+DQDebug.writeToLog("Got nill")
+				DQUI.addIssue("GPS coordinates not set", "gpsChoice", "gpsFix")
+			else
+DQDebug.writeToLog("Got location " .. x .. ", " .. y .. ", " .. z)
+				DQStore.startTransaction()
+				DQStore.store("location", "gps_x", x)
+				DQStore.store("location", "gps_y", y)
+				DQStore.store("location", "gps_z", z)
+				DQStore.commitTransaction()
+			end
+		else
+			DQUI.addIssue("GPS coordinates not set", "gpsChoice", "gpsFix")
+		end
+	end
+end
+
+local function gpsChoice(pContent, pChoice, pData, pMenuKey)
+	if (pData == "gpsFix") then
+		DQUI.pushMenu("GPS_X")
+	elseif (pMenuKey == "GPS_X") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			if (type(tonumber(pChoice)) == "number") then
+				DQStore.store("location", "gps_x", pChoice + 0)
+				DQUI.pushMenu("GPS_Y")
+			end
+		end
+	elseif (pMenuKey == "GPS_Y") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			if (type(tonumber(pChoice)) == "number") then
+				DQStore.store("location", "gps_y", pChoice + 0)
+				DQUI.pushMenu("GPS_Z")
+			end
+		end
+	elseif (pMenuKey == "GPS_Z") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			if (type(tonumber(pChoice)) == "number") then
+				DQStore.store("location", "gps_z", pChoice + 0)
+				DQUI.pushMenu("GPS_DIR")
+			end
+		end
+	elseif (pMenuKey == "GPS_DIR") then
+		if (pChoice == "BACK") then
+			DQUI.popMenu()
+		else
+			if (type(tonumber(pChoice)) == "number") then
+				DQStore.store("location", "dir", pChoice + 0)
+				DQUI.popToTop()
+			end
+		end
+	end
+end
+
+local function drawNetworkStatus(pContent, pCache, pStartLine)
+	local y = pStartLine + 1
+	if (y < pCache.sh) then
+		DQUI.run("setCursorPos", 3, y)
+		DQUI.run("write", "Packets: " .. DQStore.get({"network", "stats"}, "send", 0) .. " sent")
+		DQUI.run("setCursorPos", 27, y)
+		DQUI.run("write", string.sub(tostring(DQStore.get({"network", "stats"}, "rawreceive", 0) + DQStore.get({"network", "stats"}, "receive", 0)) .. " received", 1, pCache.sw - 27))
+		y = y + 1
+	end
+	if (y < pCache.sh) then
+		DQUI.run("setCursorPos", 3, y)
+		DQUI.run("write", "Errors: " .. DQStore.get({"network", "stats"}, "errors", 0))
+		y = y + 1
+	end
+	if (y < pCache.sh) then
+		DQUI.run("setCursorPos", 3, y)
+		DQUI.run("write", "Forwarded: " .. DQStore.get({"network", "stats"}, "forwarded", 0))
+		y = y + 1
+	end
+	if (y < pCache.sh) then
+		DQUI.run("setCursorPos", 3, y)
+		DQUI.run("write", "Devices: " .. tostring(DQStore.get({"network", "stats"}, "route_count", 0) + 1)) -- add one for this device
+		y = y + 1
+	end
+end
+
+local function gpsDialogs(pMenuKey)
+	if (pMenuKey == "GPS_Status") then
+		DQUI.displayDialog( { title=programTitle, type="status", status={ { label="Computer", key="computer_status" }, { label="Network", key="network_status" }, { label="Goal", key="goal_status" } },
+			panels={ { label="Network Status", on_draw=drawNetworkStatus } }, on_complete=gpsChoice } )
+		return true
+	elseif (pMenuKey == "GPS_X") then
+		DQUI.displayDialog( { title=programTitle, upper="Define this device's location.",
+			type="field", field_instructions="Please enter the X / first co-ordinate:", lower="(?,?,?)", on_complete = gpsChoice, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "GPS_Y") then
+		DQUI.displayDialog( { title=programTitle, upper="Define this device's location.",
+			type="field", field_instructions="Please enter the Z / second (not depth) co-ordinate:", lower="(" .. DQStore.get("location", "gps_x") .. ", ?, ?)", on_complete = gpsChoice, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "GPS_Z") then
+		DQUI.displayDialog( { title=programTitle, upper="Define this device's location.",
+			type="field", field_instructions="Please enter the Y / third (depth) co-ordinate:",
+			lower="(" .. DQStore.get("location", "gps_x") .. ", " .. DQStore.get("location", "gps_y") .. ", ?)", on_complete = gpsChoice, on_back = "BACK" } )
+		return true
+	elseif (pMenuKey == "GPS_DIR") then
+		DQUI.displayDialog( { title=programTitle, upper="Define this device's location.",
+			type="list", list_instruction="Please enter the direction:", list_choices = { { label="North" }, { label="East" }, { label="South" }, { label="West" }}, on_complete = gpsChoice, on_back = "BACK" } )
+		return true
+	end
+	return false
+end
+
+local function networkChangeCallback()
+	DQUI.panelRefresh("network_status")
+end
+
+function setup(pProgramTitle, pConfig, pEventHandlers)
+	programTitle = pProgramTitle
+	config = pConfig
+	-- If we don't have a gps, and we have a hard gps, then assign the gps to the hard gps, and clear the hard gps
+	if (((type(DQStore.get("location", "gps_x")) == "nil") or (type(DQStore.get("location", "gps_y")) == "nil") or (type(DQStore.get("location", "gps_z")) == "nil"))
+		and (tostring(DQStore.get("location", "already_loaded", false)) == "false")
+		and (type(config["hard_gps_x"]) ~= "nil")) then
+		DQStore.startTransaction()
+		DQStore.store("location", "gps_x", tonumber(config["hard_gps_x"]))
+		DQStore.store("location", "gps_y", tonumber(config["hard_gps_y"]))
+		DQStore.store("location", "gps_z", tonumber(config["hard_gps_z"]))
+		DQStore.store("location", "dir", tonumber(config["hard_dir"]))
+		DQStore.store("location", "already_loaded", true)
+		DQStore.commitTransaction()
+	end
+	DQUI.registerChoiceCallback("gpsChoice", gpsChoice)
+	DQUI.registerDialogCallback(gpsDialogs)
+	DQUI.addStatusPanel("network_status", "Network Status", drawNetworkStatus)
+	DQUtils.registerEventCallback("modem_message", receivePINGMessage)
+	DQStore.registerChangeCallback({"network", "stats"}, nil, networkChangeCallback )
+	DQStore.registerChangeCallback("location", "gps_x", gpsChange)
+	DQStore.registerChangeCallback("location", "gps_y", gpsChange)
+	DQStore.registerChangeCallback("location", "gps_z", gpsChange)
+	gpsChange()
+	if (pConfig["computer_type"] == "repeater") then
+		DQUI.pushMenu("GPS_Status")
+	end
+	DQUI.addTopOption("Set location", gpsChoice, "gpsFix")
+end

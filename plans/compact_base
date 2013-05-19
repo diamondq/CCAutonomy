@@ -1,0 +1,387 @@
+{ info={},
+  blocks={
+	{ name="cwire", blockname="Copper Wire", count=19 },
+	{ name="block", blockname="Cobblestone", count=5 },
+	{ name="rtorch", blockname="Redstone Torch", count=3 },
+	{ name="rengine", blockname="Redstone Engine", count=4 },
+	{ name="bbox", blockname="BatBox", count=2 },
+	{ name="lvt", blockname="LV Transformer", count=1 },
+	{ name="mvt", blockname="MV Transformer", count=1 },
+	{ name="mfsu", blockname="MFSU", count=1 },
+	{ name="ebridge", blockname="Energe Bridge", count=1 },
+	{ name="hvp", blockname="HV Producer", count=1 },
+	{ name="bcc", blockname="BC Consumer", count=1 },
+	{ name="sengine", blockname="Stirling Engine", count=1 },
+	{ name="lpj", blockname="Logistics Power Junction", count=1 },
+	{ name="gpipe", blockname="Golden Pipe", count=6 },
+	{ name="spipe", blockname="Sandstone Pipe", count=8 },
+	{ name="lpipe", blockname="Logistic Pipe", count=12 },
+	{ name="bfgenerator", blockname="Biofuel Generator", count=1 },
+	{ name="flooring", blockname="Cobblestone Block", count=20 },
+	{ name="flooring2", blockname="Cobblestone Block", count=64 },
+	{ name="wanchor", blockname="World Anchor", count=1 },
+	{ name="breactor", blockname="Bio Reactor", count=1 },
+	{ name="owire", blockname="Orange Insulated Wire", count=1 },
+	{ name="bcable", blockname="Bundled Cable", count=3 },
+	{ name="wall1", blockname="Glass", count=44 },
+	{ name="wall2", blockname="Glass", count=51 },
+	{ name="wall3", blockname="Glass", count=24 },
+	{ name="cwall", blockname="Cobblestone Block", count=24 },
+	{ name="door", blockname="Wooden Door", count=1 },
+	{ name="chassis1", blockname="Logistic Chassis Mk1", count=9 },
+	{ name="chassis2", blockname="Logistic Chassis Mk2", count=2 },
+	{ name="lrpipe", blockname="Request Logistic Pipe", count=3 },
+	{ name="pplate", blockname="Pressure Plate", count=1 },
+	{ name="water", blockname="Water", count=4 },
+	{ name="chest", blockname="Wooden Chest", count=8 },
+	{ name="sslab", blockname="Stone Slab", count=3 },
+	{ name="cstation", blockname="Charge Station", count=1 },
+	{ name="drive", blockname="Disk Drive", count=1 },
+	{ name="computer", blockname="Computer", count=1 },
+	{ name="wireless", blockname="Wireless Modem", count=1 },
+	{ name="lblock", blockname="Inverted White Lamp", count=8 },
+	{ name="furnace", blockname="Electric Furance", count=1 },
+	{ name="macerator", blockname="Macerator", count=1 },
+	{ name="compressor", blockname="Compressor", count=1 },
+	{ name="extractor", blockname="Extractor", count=1 }
+	},
+  actions= {
+-- Level 1
+	-- Y 1
+	-- Y 2
+	-- Y 3
+  { type = "place", block="cwire", x=2, y=3, z=1 },
+  { type = "place", block="block", x=5, y=3, z=1 },
+  { type = "place", block="rtorch", x=6, y=3, z=1 },
+	-- Y 4
+  { type = "place", block="cwire", x=2, y=4, z=1 },
+  { type = "place", block="rtorch", x=5, y=4, z=1 },
+  { type = "place", block="rengine", x=6, y=4, z=1 },
+  { type = "place", block="rtorch", x=7, y=4, z=1 },
+    -- Y 5
+  { type = "place", block="lvt", x=2, y=5, z=1 },
+  { type = "place", block="mvt", x=3, y=5, z=1 },
+  { type = "place", block="mfsu", x=4, y=5, z=1 },
+  { type = "place", block="block", x=7, y=5, z=1 },
+	-- Y 6
+  { type = "place", block="ebridge", x=3, y=6, z=1 },
+  { type = "place", block="hvp", x=4, y=6, z=1 },
+	-- Y 7
+  { type = "place", block="bcc", x=3, y=7, z=1 },
+  { type = "place", block="sengine", x=4, y=7, z=1 },
+	-- Y 8
+-- Level 2
+	-- Y 1
+	-- Y 2
+  { type = "place", block="block", x=5, y=2, z=2 },
+  { type = "place", block="block", x=6, y=2, z=2 },
+	-- Y 3
+  { type = "place", block="cwire", x=2, y=3, z=2 },
+  { type = "place", block="block", x=5, y=3, z=2 },
+  { type = "place", block="rengine", x=6, y=3, z=2 },
+	-- Y 4
+  { type = "place", block="rengine", x=5, y=4, z=2 },
+  { type = "place", block="lpj", x=6, y=4, z=2 },
+  { type = "place", block="rengine", x=7, y=4, z=2 },
+	-- Y 5
+  { type = "place", block="cwire", x=2, y=5, z=2 },
+  { type = "place", block="gpipe", x=3, y=5, z=2 },
+  { type = "place", block="spipe", x=4, y=5, z=2 },
+  { type = "place", block="spipe", x=5, y=5, z=2 },
+  { type = "place", block="lpipe", x=6, y=5, z=2 },
+	-- Y 6
+	-- Y 7
+  { type = "place", block="bfgenerator", x=3, y=7, z=2 },
+	-- Y 8
+-- Level 3
+	-- Y 1
+  { type="place-cube", block="flooring", x1=1, x2=8, y1=1, y2=1, z1=3, z2=3, td="d", tf="E" },
+	-- Y 2
+  { type="place-cube", block="flooring", x1=1, x2=4, y1=2, y2=2, z1=3, z2=3, td="d", tf="E" },
+  { type="place-cube", block="water", x1=5, x2=6, y1=2, y2=2, z1=3, z2=3, td="d", tf="E" },
+  { type="place-cube", block="flooring", x1=7, x2=8, y1=2, y2=2, z1=3, z2=3, td="d", tf="E" },
+	-- Y 3
+  { type = "place", block="flooring", x=1, y=3, z=3 },
+  { type = "place", block="bbox", x=2, y=3, z=3 },
+  { type="place-cube", block="flooring", x1=3, x2=4, y1=3, y2=3, z1=3, z2=3, td="d", tf="E" },
+  { type="place-cube", block="water", x1=5, x2=6, y1=3, y2=3, z1=3, z2=3, td="d", tf="E" },
+  { type="place-cube", block="flooring", x1=7, x2=8, y1=3, y2=3, z1=3, z2=3, td="d", tf="E" },
+	-- Y 4
+  { type="place-cube", block="flooring", x1=1, x2=8, y1=4, y2=4, z1=3, z2=3, td="d", tf="E" },
+	-- Y 5
+  { type = "place", block="flooring", x=1, y=5, z=3 },
+  { type = "place", block="cwire", x=2, y=5, z=3 },
+  { type = "place", block="lpipe", x=3, y=5, z=3 },
+  { type = "place", block="flooring", x=4, y=5, z=3 },
+  { type = "place", block="wanchor", x=5, y=5, z=3 },
+  { type = "place", block="lpipe", x=6, y=5, z=3 },
+  { type = "place", block="flooring", x=7, y=5, z=3 },
+  { type = "place", block="flooring", x=8, y=5, z=3 },
+	-- Y 6
+  { type="place-cube", block="flooring", x1=1, x2=8, y1=6, y2=6, z1=3, z2=3, td="d", tf="E" },
+	-- Y 7
+  { type = "place", block="flooring", x=1, y=7, z=3 },
+  { type = "place", block="flooring", x=2, y=7, z=3 },
+  { type = "place", block="breactor", x=3, y=7, z=3 },
+  { type = "place", block="owire", x=4, y=7, z=3 },
+  { type = "place", block="bcable", x=5, y=7, z=3 },
+  { type="place-cube", block="flooring", x1=6, x2=8, y1=7, y2=7, z1=3, z2=3, td="d", tf="E" },
+	-- Y 8
+  { type="place-cube", block="flooring", x1=1, x2=8, y1=8, y2=8, z1=3, z2=3, td="d", tf="E" },
+-- Level 4
+	-- Y 1
+  { type = "place", block="cwall", x=1, y=1, z=4 },
+  { type = "place", block="wall1", x=2, y=1, z=4 },
+  { type = "place", block="wall1", x=3, y=1, z=4 },
+  { type = "place", block="door", x=4, y=1, z=4 },
+  { type="place-cube", block="wall1", x1=5, x2=7, y1=1, y2=1, z1=4, z2=4, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=1, z=4 },
+	-- Y 2
+  { type = "place", block="wall1", x=1, y=2, z=4 },
+  { type = "place", block="chassis1", x=2, y=2, z=4 },
+  { type = "place", block="lrpipe", x=3, y=2, z=4 },
+  { type = "place", block="pplate", x=4, y=2, z=4 },
+  { type = "place", block="chassis2", x=6, y=2, z=4 },
+  { type = "place", block="chest", x=7, y=2, z=4 },
+  { type = "place", block="wall1", x=8, y=2, z=4 },
+	-- Y 3
+  { type = "place", block="cwire", x=1, y=3, z=4 },
+  { type = "place", block="cwire", x=2, y=3, z=4 },
+  { type = "place", block="gpipe", x=3, y=3, z=4 },
+  { type = "place", block="lpipe", x=6, y=3, z=4 },
+  { type = "place", block="chest", x=7, y=3, z=4 },
+  { type = "place", block="wall1", x=8, y=3, z=4 },
+	-- Y 4
+  { type = "place", block="wall1", x=1, y=4, z=4 },
+  { type = "place", block="chassis1", x=2, y=4, z=4 },
+  { type = "place", block="lrpipe", x=3, y=4, z=4 },
+  { type = "place", block="sslab", x=4, y=4, z=4 },
+  { type = "place", block="sslab", x=5, y=4, z=4 },
+  { type = "place", block="lpipe", x=6, y=4, z=4 },
+  { type = "place", block="wall1", x=8, y=4, z=4 },
+	-- Y 5
+  { type = "place", block="wall1", x=1, y=5, z=4 },
+  { type = "place", block="cwire", x=2, y=5, z=4 },
+  { type = "place", block="lpipe", x=3, y=5, z=4 },
+  { type = "place", block="sslab", x=4, y=5, z=4 },
+  { type = "moveblock", x=5, y=5, z=4 },
+  { type = "place", block="chassis2", x=6, y=5, z=4 },
+  { type = "place", block="chest", x=7, y=5, z=4 },
+  { type = "place", block="wall1", x=8, y=5, z=4 },
+	-- Y 6
+  { type = "place", block="wall1", x=1, y=6, z=4 },
+  { type = "place", block="chassis1", x=2, y=6, z=4 },
+  { type = "place", block="lrpipe", x=3, y=6, z=4 },
+  { type = "place", block="flooring", x=4, y=6, z=4 },
+  { type = "place", block="flooring", x=5, y=6, z=4 },
+  { type = "place", block="lpipe", x=6, y=6, z=4 },
+  { type = "place", block="chest", x=7, y=6, z=4 },
+  { type = "place", block="wall1", x=8, y=6, z=4 },
+	-- Y 7
+  { type = "place", block="wall1", x=1, y=7, z=4 },
+  { type = "place", block="gpipe", x=2, y=7, z=4 },
+  { type = "place", block="flooring", x=4, y=7, z=4 },
+  { type = "place", block="bcable", x=5, y=7, z=4 },
+  { type = "place", block="lpipe", x=6, y=7, z=4 },
+  { type = "place", block="wall1", x=8, y=7, z=4 },
+	-- Y 8
+  { type = "place", block="cwall", x=1, y=8, z=4 },
+  { type="place-cube", block="wall1", x1=2, x2=7, y1=8, y2=8, z1=4, z2=4, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=8, z=4 },
+  -- 22
+-- Level 5 
+	-- Y 1
+  { type = "place", block="cwall", x=1, y=1, z=5 },
+  { type = "place", block="wall1", x=2, y=1, z=5 },
+  { type = "place", block="wall1", x=3, y=1, z=5 },
+  { type = "moveblock", x=4, y=1, z=5 },
+  { type="place-cube", block="wall1", x1=5, x2=7, y1=1, y2=1, z1=5, z2=5, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=1, z=5 },
+	-- Y 2
+  { type = "place", block="wall1", x=1, y=2, z=5 },
+  { type = "place", block="chest", x=2, y=2, z=5 },
+  { type = "place", block="wall1", x=8, y=2, z=5 },
+	-- Y 3
+  { type = "place", block="cwire", x=1, y=3, z=5 },
+  { type = "place", block="wall1", x=8, y=3, z=5 },
+	-- Y 4
+  { type = "place", block="wall1", x=1, y=4, z=5 },
+  { type = "place", block="chest", x=2, y=4, z=5 },
+  { type = "moveblock", x=4, y=4, z=5 },
+  { type = "moveblock", x=5, y=4, z=5 },
+  { type = "place", block="wall1", x=8, y=4, z=5 },
+	-- Y 5
+  { type = "place", block="wall1", x=1, y=5, z=5 },
+  { type = "place", block="cstation", x=2, y=5, z=5 },
+  { type = "moveblock", x=4, y=5, z=5 },
+  { type = "moveblock", x=5, y=5, z=5 },
+  { type = "place", block="wall1", x=8, y=5, z=5 },
+	-- Y 6
+  { type = "place", block="wall1", x=1, y=6, z=5 },
+  { type = "place", block="chest", x=2, y=6, z=5 },
+  { type = "place", block="drive", x=4, y=6, z=5 },
+  { type = "place", block="computer", x=5, y=6, z=5 },
+  { type = "place", block="wall1", x=8, y=6, z=5 },
+	-- Y 7
+  { type = "place", block="wall1", x=1, y=7, z=5 },
+  { type = "place", block="spipe", x=2, y=7, z=5 },
+  { type = "place", block="flooring", x=4, y=7, z=5 },
+  { type = "place", block="lrpipe", x=5, y=7, z=5 },
+  { type = "place", block="chassis2", x=6, y=7, z=5 },
+  { type = "place", block="chest", x=7, y=7, z=5 },
+  { type = "place", block="wall1", x=8, y=7, z=5 },
+	-- Y 8
+  { type = "place", block="cwall", x=1, y=8, z=5 },
+  { type="place-cube", block="wall1", x1=2, x2=7, y1=8, y2=8, z1=5, z2=5, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=8, z=5 },
+	-- 22
+-- Level 6
+	-- Y 1
+  { type = "place", block="cwall", x=1, y=1, z=6 },
+  { type="place-cube", block="wall2", x1=2, x2=7, y1=1, y2=1, z1=6, z2=6, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=1, z=6 },
+	-- Y 2
+  { type = "place", block="wall2", x=1, y=2, z=6 },
+  { type = "place", block="spipe", x=2, y=2, z=6 },
+  { type = "place", block="wall2", x=8, y=2, z=6 },
+	-- Y 3
+  { type = "place", block="cwire", x=1, y=3, z=6 },
+  { type = "place", block="spipe", x=2, y=3, z=6 },
+  { type = "place", block="wall2", x=8, y=3, z=6 },
+	-- Y 4
+  { type = "place", block="wall2", x=1, y=4, z=6 },
+  { type = "place", block="lpipe", x=2, y=4, z=6 },
+  { type = "place", block="wall2", x=8, y=4, z=6 },
+	-- Y 5
+  { type = "place", block="wall2", x=1, y=5, z=6 },
+  { type = "place", block="spipe", x=2, y=5, z=6 },
+  { type = "place", block="wall2", x=8, y=5, z=6 },
+	-- Y 6
+  { type = "place", block="wall2", x=1, y=6, z=6 },
+  { type = "place", block="lpipe", x=2, y=6, z=6 },
+  { type = "place", block="wireless", x=5, y=6, z=6 },
+  { type = "place", block="wall2", x=8, y=6, z=6 },
+	-- Y 7
+  { type = "place", block="wall2", x=1, y=7, z=6 },
+  { type = "place", block="spipe", x=2, y=7, z=6 },
+  { type = "place", block="chest", x=4, y=7, z=6 },
+  { type = "place", block="wall2", x=8, y=7, z=6 },
+	-- Y 8
+  { type = "place", block="cwall", x=1, y=8, z=6 },
+  { type="place-cube", block="wall2", x1=2, x2=7, y1=8, y2=8, z1=6, z2=6, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=8, z=6 },
+	-- 23
+-- Level 7
+	-- Y 1
+  { type = "place", block="cwall", x=1, y=1, z=7 },
+  { type = "place", block="lblock", x=2, y=1, z=7 },
+  { type = "place", block="lblock", x=7, y=1, z=7 },
+  { type = "place", block="cwall", x=8, y=1, z=7 },
+	-- Y 2
+  { type = "place", block="lblock", x=1, y=2, z=7 },
+  { type = "place", block="chassis1", x=2, y=2, z=7 },
+  { type = "place", block="lblock", x=8, y=2, z=7 },
+	-- Y 3
+  { type = "place", block="cwire", x=1, y=3, z=7 },
+  { type = "place", block="furnace", x=2, y=3, z=7 },
+  { type = "place", block="wall2", x=8, y=3, z=7 },
+	-- Y 4
+  { type = "place", block="wall2", x=1, y=4, z=7 },
+  { type = "place", block="chassis1", x=2, y=4, z=7 },
+  { type = "place", block="wall2", x=8, y=4, z=7 },
+	-- Y 5
+  { type = "place", block="wall2", x=1, y=5, z=7 },
+  { type = "place", block="compressor", x=2, y=5, z=7 },
+  { type = "place", block="wall2", x=8, y=5, z=7 },
+	-- Y 6
+  { type = "place", block="lblock", x=1, y=6, z=7 },
+  { type = "place", block="chassis1", x=2, y=6, z=7 },
+  { type = "place", block="gpipe", x=3, y=6, z=7 },
+  { type = "place", block="lblock", x=8, y=6, z=7 },
+	-- Y 7
+  { type = "place", block="lblock", x=1, y=7, z=7 },
+  { type = "place", block="lblock", x=8, y=7, z=7 },
+	-- Y 8
+  { type = "place", block="cwall", x=1, y=8, z=7 },
+  { type = "place", block="lblock", x=2, y=8, z=7 },
+  { type = "place", block="lblock", x=7, y=8, z=7 },
+  { type = "place", block="cwall", x=8, y=8, z=7 },
+  -- 5
+-- Level 8
+	-- Y 1
+  { type = "place", block="cwall", x=1, y=1, z=8 },
+  { type="place-cube", block="wall2", x1=2, x2=7, y1=1, y2=1, z1=8, z2=8, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=1, z=8 },
+	-- Y 2
+  { type = "place", block="wall2", x=1, y=2, z=8 },
+  { type = "place", block="gpipe", x=2, y=2, z=8 },
+  { type = "place", block="gpipe", x=3, y=2, z=8 },
+  { type = "place", block="wall2", x=8, y=2, z=8 },
+	-- Y 3
+  { type = "place", block="cwire", x=1, y=3, z=8 },
+  { type = "place", block="cwire", x=2, y=3, z=8 },
+  { type = "place", block="wall2", x=8, y=3, z=8 },
+	-- Y 4
+  { type = "place", block="wall2", x=1, y=4, z=8 },
+  { type = "place", block="lpipe", x=3, y=4, z=8 },
+  { type = "place", block="wall2", x=8, y=4, z=8 },
+	-- Y 5
+  { type = "place", block="wall2", x=1, y=5, z=8 },
+  { type = "place", block="cwire", x=2, y=5, z=8 },
+  { type = "place", block="spipe", x=3, y=5, z=8 },
+  { type = "place", block="wall2", x=8, y=5, z=8 },
+	-- Y 6
+  { type = "place", block="wall2", x=1, y=6, z=8 },
+  { type = "place", block="lpipe", x=3, y=6, z=8 },
+  { type = "place", block="wall2", x=8, y=6, z=8 },
+	-- Y 7
+  { type = "place", block="wall2", x=1, y=7, z=8 },
+  { type = "place", block="cwire", x=2, y=7, z=8 },
+  { type = "place", block="wall2", x=8, y=7, z=8 },
+	-- Y 8
+  { type = "place", block="cwall", x=1, y=8, z=8 },
+  { type="place-cube", block="wall2", x1=2, x2=7, y1=8, y2=8, z1=8, z2=8, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=8, z=8 },
+  -- 23
+-- Level 9
+	-- Y 1
+  { type = "place", block="cwall", x=1, y=1, z=9 },
+  { type="place-cube", block="wall3", x1=2, x2=7, y1=1, y2=1, z1=9, z2=9, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=1, z=9 },
+	-- Y 2
+  { type = "place", block="wall3", x=1, y=2, z=9 },
+  { type = "place", block="chassis1", x=3, y=2, z=9 },
+  { type = "place", block="wall3", x=8, y=2, z=9 },
+	-- Y 3
+  { type = "place", block="wall3", x=1, y=3, z=9 },
+  { type = "place", block="cwire", x=2, y=3, z=9 },
+  { type = "place", block="macerator", x=3, y=3, z=9 },
+  { type = "place", block="wall3", x=8, y=3, z=9 },
+	-- Y 4
+  { type = "place", block="wall3", x=1, y=4, z=9 },
+  { type = "place", block="bbox", x=2, y=4, z=9 },
+  { type = "place", block="chassis1", x=3, y=4, z=9 },
+  { type = "place", block="wall3", x=8, y=4, z=9 },
+	-- Y 5
+  { type = "place", block="wall3", x=1, y=5, z=9 },
+  { type = "place", block="cwire", x=2, y=5, z=9 },
+  { type = "place", block="extractor", x=3, y=5, z=9 },
+  { type = "place", block="wall3", x=8, y=5, z=9 },
+	-- Y 6
+  { type = "place", block="wall3", x=1, y=6, z=9 },
+  { type = "place", block="cwire", x=2, y=6, z=9 },
+  { type = "place", block="chassis1", x=3, y=6, z=9 },
+  { type = "place", block="wall3", x=8, y=6, z=9 },
+	-- Y 7
+  { type = "place", block="wall3", x=1, y=7, z=9 },
+  { type = "place", block="cwire", x=2, y=7, z=9 },
+  { type = "place", block="wall3", x=8, y=7, z=9 },
+	-- Y 8
+  { type = "place", block="cwall", x=1, y=8, z=9 },
+  { type="place-cube", block="wall3", x1=2, x2=7, y1=8, y2=8, z1=9, z2=9, td="d", tf="E" },
+  { type = "place", block="cwall", x=8, y=8, z=9 },
+  -- 24
+-- Level 10
+  { type="place-cube", block="flooring2", x1=1, x2=8, y1=1, y2=8, z1=10, z2=10, td="u", tf="E" }
+} }
+

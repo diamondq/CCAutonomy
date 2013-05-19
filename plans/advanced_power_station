@@ -1,0 +1,275 @@
+-- power station
+
+	132 stone block
+	16 water
+	16 buckets
+	16 redstone engine
+	4 pump
+	32 insulated red wire
+	6 cable
+	12 jacketed cable
+	4 wooden waterproof pipe
+	53 gold waterproof pipe
+	12 wooden conductive pipe
+	8 gold conductive pipe
+	12 combustion engine
+	3 insulated blue wire
+	3 insulated green wire
+	1 computer
+	1 mv energy converter
+	5 glass cable
+	1 wireless modem
+	1 mfsu
+
+-- z = 1 full floor
+	64 stone
+-- z = 2
+	48 stone
+	16 water
+	16 buckets
+	
+	x1=2,y1=2,x2=3,y2=3 pool
+	x1=6,y1=2,x2=7,y2=3 pool
+	x1=2,y1=6,x2=3,y2=7 pool
+	x1=6,y1=6,x2=7,y2=7 pool
+	rest floor
+-- z = 3
+	16 redstone engine
+	4 pump
+	32 insulated red wire
+	1 cable
+	1 jacketed cable
+	
+	y = 1
+	  x=2 redstone engine
+	  x=3 to x=5 insulated red wire
+	  x=6 redstone engine
+	y = 2
+	  x=1 redstone engine
+	  x=2 pump
+	  x=3 redstone engine
+	  x=4 insulated red wire
+	  x=5 redstone engine
+	  x=6 pump
+	  x=7 redstone engine
+	  x=8 insulated red wire
+	y = 3
+	  x=1 insulated red wire
+	  x=2 redstone engine
+	  x=4 insulated red wire
+	  x=6 redstone engine
+	  x=8 insulated red wire
+	y = 4
+	  x=1 to 8 insulated red wire
+    y = 5
+	  x=1 insulated red wire
+	  x=3 redstone engine
+	  x=5 insulated red wire
+	  x=6 cable + jacketed cable
+	  x=8 insulated red wire
+	y = 6
+	  x=1 insulated red wire
+	  x=2 redstone engine
+	  x=3 pump
+	  x=4 redstone engine
+	  x=5 insulated red wire
+	  x=6 redstone engine
+	  x=8 insulated red wire
+	y = 7
+	  x=1 insulated red wire
+	  x=3 redstone engine
+	  x=4 insulated red wire
+	  x=5 redstone engine
+	  x=6 pump
+	  x=7 redstone engine
+	  x=8 insulated red wire
+	y = 8
+	  x=1 to 5 insulated red wire
+	  x=6 redstone engine
+	  x=7-8 insulated red wire
+z = 4
+	4 wooden waterproof pipe
+	15 golden waterproof pipe
+	1 jacketed cable
+	
+	y=2
+		x=2 wooden waterproof pipe
+		x=3 gold waterproof pipe
+		x=6 wooden waterproof pipe
+	y=3
+		x=3 gold waterproof pipe
+		x=5-7 gold waterproof pipe
+	y=4
+		x=2-4 gold waterproof pipe
+		x=6 gold waterproof pipe
+	y=5
+		x=6 jacketed cable
+	y=6
+		x=2 gold waterproof pipe
+		x=3 wooden waterproof pipe
+		x=4 gold waterproof pipe
+		x=6 gold waterproof pipe
+	y=7
+		x=3 gold waterproof pipe
+		x=5 gold waterproof pipe
+		x=6 wooden waterproof pipe
+		x=7 gold waterproof pipe
+z=5
+	17 stone block
+	12 gold waterproof pipe
+	1 jacketed cable
+	
+	y=3
+		x=2 stone block
+		x=3 gold waterproof pipe
+		x=4 stone block
+		x=5 gold waterproof pipe
+		x=6 stone block
+		x=7 gold waterproof pipe
+	y=4
+		x=2 gold waterproof pipe
+		x=3 stone block
+		x=4 gold waterproof pipe
+		x=5 stone block
+		x=6 gold waterproof pipe
+		x=7 stone block
+	y=5 
+		x=2-5 stone block
+		x=6 jacketed cable (+two hollow slabs)
+		x=7 stone block
+	y=6
+		x=2 gold waterproof pipe
+		x=3 stone block
+		x=4 gold waterproof pipe
+		x=5 stone block
+		x=6 gold waterproof pipe
+		x=7 stone block
+	y=7
+		x=2 stone block
+		x=3 gold waterproof pipe
+		x=4 stone block
+		x=5 gold waterproof pipe
+		x=6 stone block
+		x=7 gold waterproof pipe
+z=6
+	7 gold waterproof pipe
+	12 combustion engine
+	3 insulated blue wire
+	5 jacketed cable
+	3 cable
+	3 insulated green wire
+	
+	y=3
+		x=2 gold waterproof pipe
+		x=3 combustion engine
+		x=4 gold waterproof pipe
+		x=5 combustion engine
+		x=6 gold waterproof pipe
+		x=7 combustion engine
+	y=4
+		x=2 combustion engine
+		x=3 insulated blue wire
+		x=4 combustion engine
+		x=5 insulated blue wire
+		x=6 combustion engine
+		x=7 insulated blue wire
+	y=5
+		x=3 cable + jacketed cable
+		x=4 jacketed cable
+		x=5 cable + jacketed cable
+		x=6 jacketed cable
+		x=7 cable + jacketed cable
+	y=6
+		x=2 combustion engine
+		x=3 insulated green wire
+		x=4 combustion engine
+		x=5 insulated green wire
+		x=6 combustion engine
+		x=7 insulated green wire
+	y=7
+		x=2 gold waterproof pipe
+		x=3 combustion engine
+		x=4 gold waterproof pipe
+		x=5 combustion engine
+		x=6 gold waterproof pipe
+		x=7 combustion engine
+	y=8
+		x=4 gold waterproof pipe
+z=7
+	6 gold waterproof pipe
+	7 gold conductive pipe
+	12 wooden conductive pipe
+	1 jacketed cable
+	
+	y=3
+		x=2 gold waterproof pipe
+		x=3 wooden conductive pipe
+		x=4 gold waterproof pipe
+		x=5 wooden conductive pipe
+		x=6 gold waterproof pipe
+		x=7 wooden conductive pipe
+	y=4
+		x=2 wooden conductive pipe
+		x=3 gold conductive pipe
+		x=4 wooden conductive pipe
+		x=5 gold conductive pipe
+		x=6 wooden conductive pipe
+		x=7 gold conductive pipe
+	y=5
+		x=6 jacketed cable
+		x=7 gold conductive pipe
+	y=6
+		x=2 wooden conductive pipe
+		x=3 gold conductive pipe
+		x=4 wooden conductive pipe
+		x=5 gold conductive pipe
+		x=6 wooden conductive pipe
+		x=7 gold conductive pipe
+	y=7
+		x=2 gold waterproof pipe
+		x=3 wooden conductive pipe
+		x=4 gold waterproof pipe
+		x=5 wooden conductive pipe
+		x=6 gold waterproof pipe
+		x=7 wooden conductive pipe
+z=8
+	13 gold waterproof pipe
+	3 stone block
+	1 jacketed cable
+	1 gold conductive pipe
+	
+	y=3
+		x=2-6 gold waterproof pipe
+	y=4
+		x=2 gold waterproof pipe
+	y=5
+		x=2 gold waterproof pipe
+		x=3-5 stone block
+		x=6 jacketed cable
+		x=7 gold conductive pipe
+	y=6
+		x=2 gold waterproof pipe
+	y=7
+		x=2-6 gold waterproof pipe
+z=9
+	1 computer
+	2 cable
+	2 jacketed cable
+	1 mv energy converter
+	5 glass cable
+	1 wireless modem
+	1 mfsu
+	
+	y=5
+		x=3 computer
+		x=4 cable
+		x=5 cable + (jacketed cable)
+		x=6 jacketed cable
+		x=7 mv energy converter
+	y=6
+		x=3 wireless modem
+		x=7 mfsu
+	y=7
+		x=4-7 glass cable
+	y=8
+		x=4 glass cable

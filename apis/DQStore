@@ -1,0 +1,748 @@
+-- DQStore -- provides an easy place for all the modules to provide status, and for the status pages to pick them up
+
+local debug = false
+local logger = DQDebug.getDebugLogger("DQStore", debug)
+
+local sConfig = {}
+local sStartupNum = 0
+-- Holds all the callback functions, etc.
+sCallbacks = {}
+sCallbacks.children = {}
+sCallbacks.wildChildren = {}
+sCallbacks.funcs = {}
+
+
+-- Holds just the cached persistence data
+sCache = {}
+sCache_count = 0
+sMax_cache_size = 32
+sChange_seed = 0
+
+-- A transaction:
+-- { parent: parentTransaction	- there can be a chain of transactions. Only when the root transaction is committed are the changes actual stored permanently
+--		order: { path1, path2 }	- defines the order of the changes in this transaction. Each element is the path
+--		changes: { path1={ fDir, fPath, pKey1, pKey2, oldValue, pValue, paths } }
+-- }
+local sCurrentTransaction = nil
+
+local function flattenPath(pKey, pKey2)
+	local path
+	if (type(pKey) == "string") then
+		path = { pKey .. "" }
+	elseif (type(pKey) == "number") then
+		path = { pKey .. "" }
+	elseif (type(pKey) == "table") then
+		path = {}
+		for _,v in ipairs(pKey) do
+			table.insert(path, v)
+		end
+	end
+	local fPath = ""
+	local finalElem = #path
+	local dir = nil
+	local file = nil
+	for k,v in ipairs(path) do
+		if (k == finalElem) then
+			dir = fPath
+			file = v .. ".txt"
+			fPath = fPath .. "/" .. v .. ".txt"
+		else
+			fPath = fPath .. "/" .. v
+		end
+	end
+	local fullPath
+	if (type(pKey2) ~= "nil") then
+		table.insert(path, pKey2)
+		fullPath = fPath .. "/" .. pKey2
+	else
+		fullPath = fPath
+	end
+	return fPath, dir, file, path, fullPath
+end
+
+local function recurseScanTransaction(pPath, pTrans)
+	if (type(pTrans.elems[pPath]) ~= "nil") then
+		return pTrans.elems[pPath].e
+	end
+	if (pTrans.parent ~= nil) then
+		return recurseScanTransaction(pPath, pTrans.parent)
+	else
+		return nil
+	end
+end
+
+local function retrieve(pKey, pCreate)
+	local fPath = flattenPath(pKey)
+	if (type(sCache[fPath]) == "nil") then
+		if (sCurrentTransaction ~= nil) then
+			local result = recurseScanTransaction(fPath, sCurrentTransaction)
+			if (result ~= nil) then
+				return result
+			end
+		end
+		if (pCreate == false) then
+			if (fs.exists("/storage" .. fPath) == false) then
+				return nil
+			end
+		end
+		-- If the cache is full, then remove an element
+		sCache_count = sCache_count + 1
+		if (sCache_count > sMax_cache_size) then
+			-- Find the oldest element
+			local oldValue = 2147483647
+			local oldOffset = 0
+			for k,v in pairs(sCache) do
+				if (v.last < oldValue) then
+					oldOffset = k
+					oldValue = v.last
+				end
+			end
+			sCache[oldOffset] = nil
+			sCache_count = sCache_count - 1
+		end
+		sCache[fPath] = {}
+		sCache[fPath].count = 0
+		sCache[fPath].value = {}
+		sChange_seed = sChange_seed + 1
+		sCache[fPath].last = sChange_seed
+		-- Page in
+		if (fs.exists("/storage" .. fPath) == true) then
+			local h = fs.open("/storage" .. fPath, "r")
+			local content = h.readAll()
+			sCache[fPath].value = textutils.unserialize(content)
+			if (type(sCache[fPath].value) ~= "table") then
+				-- This is an error scenario. Somehow the data has gotten corrupted.
+				sCache[fPath].value = {}
+			end
+			h.close()
+		end
+	end
+	-- Check expiry
+	if (type(sCache[fPath].value["__expiry"]) ~= "nil") then
+-- DQDebug.writeToLog("Ex1")			
+		if ((tonumber(sCache[fPath].value["__startupnum"]) ~= sStartupNum) or (tonumber(sCache[fPath].value["__expiry"]) < os.clock())) then
+-- DQDebug.writeToLog("Ex2")			
+			sCache[fPath].value = {}
+			fs.delete("/storage" .. fPath)
+			if (pCreate == false) then
+-- DQDebug.writeToLog("Ex3")			
+				sCache_count = sCache_count - 1
+				sCache[fPath] = nil
+				return nil
+			end
+		end
+	end
+	return sCache[fPath]
+end
+
+local function findMatches(pFilePrefix, pPaths, pOffset, pMatches)
+	if (string.sub(pPaths[pOffset], -1) == "*") then
+		local base = string.sub(pPaths[pOffset], 1, -2)
+		if (pOffset == #pPaths) then
+			local h = fs.open(pFilePrefix, "r")
+			local content = h.readAll()
+			local value = textutils.unserialize(content)
+			h.close()
+			for k,v in pairs(value) do
+				if (base == string.sub(k, 1, string.len(base))) then
+					local nPath = {}
+					for k2,v2 in ipairs(pPaths) do
+						nPath[k2] = v2
+					end
+					nPath[pOffset] = k
+					table.insert(pMatches, nPath)
+				end
+			end
+		elseif (pOffset == (#pPaths - 1)) then
+			local fileList = fs.list(pFilePrefix)
+			for _,v in ipairs(fileList) do
+				if ((base == string.sub(v, 1, string.len(base))) and (string.sub(v, -4) == ".txt")) then
+					local nPath = {}
+					for k2,v2 in ipairs(pPaths) do
+						nPath[k2] = v2
+					end
+					nPath[pOffset] = string.sub(v, 1, -5) .. ""
+					findMatches(pFilePrefix .. "/" .. v, nPath, pOffset + 1, pMatches)
+				end
+			end
+		else
+			local fileList = fs.list(pFilePrefix)
+			for _,v in ipairs(fileList) do
+				if ((base == string.sub(v, 1, string.len(base))) and (string.sub(v, -4) ~= ".txt")) then
+					local nPath = {}
+					for k2,v2 in ipairs(pPaths) do
+						nPath[k2] = v2
+					end
+					nPath[pOffset] = v
+					findMatches(pFilePrefix .. "/" .. v, nPath, pOffset + 1, pMatches)
+				end
+			end
+		end
+	else
+		local path
+		if (pOffset == #pPaths) then
+			local h = fs.open(pFilePrefix, "r")
+			local content = h.readAll()
+			local value = textutils.unserialize(content)
+			h.close()
+			if (type(value[pPaths[pOffset]]) ~= "nil") then
+				table.insert(pMatches, pPaths)
+			end
+		elseif (pOffset == (#pPaths - 1)) then
+			path = pFilePrefix .. "/" .. pPaths[pOffset] .. ".txt"
+			if (fs.exists(path) == true) then
+				findMatches(path, pPaths, pOffset + 1, pMatches)
+			end
+		else
+			path = pFilePrefix .. "/" .. pPaths[pOffset]
+			if (fs.exists(path) == true) then
+				findMatches(path, pPaths, pOffset + 1, pMatches)
+			end
+		end
+	end
+end
+
+local function recurseCallback(pCallbacks, pPaths, pOldValue, pNewValue, pOffset, pKey1, pKey2)
+-- DQDebug.dump({ pCallbacks = pCallbacks, pPaths = pPaths, pOldValue = pOldValue, pNewValue = pNewValue, pOffset = pOffset, pKey1 = pKey1, pKey2 = pKeys })
+	if (type(pCallbacks) == "nil") then
+		return
+	end
+	if (pOffset <= #pPaths) then
+		recurseCallback(pCallbacks.children[pPaths[pOffset]], pPaths, pOldValue, pNewValue, pOffset + 1, pKey1, pKey2)
+		if (#pCallbacks.wildChildren > 0) then
+-- DQDebug.writeToLog("Wildcard found")
+			local testPath = pPaths[pOffset]
+			for _,v in pairs(pCallbacks.wildChildren) do
+-- DQDebug.writeToLog("Testing " .. testPath .. " against " .. v.path)
+				if (string.sub(testPath, 1, string.len(v.path)) == v.path) then
+-- DQDebug.writeToLog("match, continuing")
+					recurseCallback(v, pPaths, pOldValue, pNewValue, pOffset + 1, pKey1, pKey2)
+				end
+			end
+		end
+	end
+	local copy = {}
+	for k,v in ipairs(pCallbacks.funcs) do
+		copy[k] = v
+	end
+	for _,v in ipairs(copy) do
+		if ((type(v["v"]) == "nil") or (tostring(pNewValue) == v.v)) then
+-- DQDebug.writeToLog("Calling function")
+			v.f(v.data, pKey1, pKey2, pOldValue, pNewValue)
+		end
+	end
+end
+
+function remove(pKey1, pKey2)
+	local fPath, fDir, fName, paths = flattenPath(pKey1, pKey2)
+	local elem = retrieve(pKey1, false)
+	if (type(elem) == "nil") then
+		return
+	end
+	if (type(elem.value[pKey2]) == "nil") then
+		return
+	end
+	local oldValue = elem.value[pKey2]
+	elem.value[pKey2] = nil
+	elem.count = elem.count - 1
+	local fPath, fDir, fName, paths = flattenPath(pKey1, pKey2)
+	if (sCurrentTransaction == nil) then
+		if (elem.count > 0) then
+			if (fs.exists("/storage" .. fDir) == false) then
+				fs.makeDir(fDir)
+			end
+			local h = fs.open("/storage" .. fPath, "w")
+			h.write(textutils.serialize(elem.value))
+			h.close()
+		else
+			-- The whole file can be deleted
+			fs.delete("/storage" .. fPath)
+			sCache[fPath] = nil
+			sCache_count = sCache_count - 1
+		end
+		-- Now notify any callbacks
+		recurseCallback(sCallbacks, paths, oldValue, nil, 1, pKey1, pKey2)
+	else
+		DQDebug.writeToLog("remove within a transaction is not supported")
+		fail()
+	end
+end
+
+function increment(pKey1, pKey2)
+	local oldValue = tonumber(get(pKey1, pKey2, 0))
+	store(pKey1, pKey2, oldValue + 1)
+	return oldValue + 1
+end
+
+function decrement(pKey1, pKey2)
+	local oldValue = tonumber(get(pKey1, pKey2, 0))
+	store(pKey1, pKey2, oldValue - 1)
+	return oldValue - 1
+end
+
+function store(pKey1, pKey2, pValue)
+	logger:debug("store(%s, %s, %s)", DQDebug.serialize3(pKey1, pKey2, pValue))
+	if (type(pValue) == "nil") then
+		remove(pKey1, pKey2)
+	else
+		local elem = retrieve(pKey1, true)
+		local oldValue = elem.value[pKey2]
+		-- Is changed?
+		local changed = false
+		if (oldValue == nil) then
+			changed = true
+		else
+			local oldStr
+			if (type(oldValue) == "table") then
+				oldStr = textutils.serialize(oldValue)
+			else
+				oldStr = tostring(oldValue)
+			end
+			local newStr
+			if (type(pValue) == "table") then
+				newStr = textutils.serialize(pValue)
+			else
+				newStr = tostring(pValue)
+			end
+			if (oldStr ~= newStr) then
+				changed = true
+			end
+		end
+-- DQDebug.writeToLog("changed: " .. tostring(changed)	)	
+		if (changed == true) then
+			if (oldValue == nil) then
+				elem.count = elem.count + 1
+			end
+			elem.value[pKey2] = pValue
+			sChange_seed = sChange_seed + 1
+			elem.last = sChange_seed
+			local fPath, fDir, fName, paths, fullPath = flattenPath(pKey1, pKey2)
+			if (sCurrentTransaction == nil) then
+				-- Store the value
+				if (fs.exists("/storage" .. fDir) == false) then
+					fs.makeDir("/storage" .. fDir)
+				end
+				local h = fs.open("/storage" .. fPath, "w")
+				h.write(textutils.serialize(elem.value))
+				h.close()
+				-- Now notify any callbacks
+				recurseCallback(sCallbacks, paths, oldValue, pValue, 1, pKey1, pKey2)
+			else
+				-- Have we already seen this object in this transaction
+				local seen = false
+				for k,v in ipairs(sCurrentTransaction.order) do
+					if (v == fullPath) then
+						seen = true
+						break
+					end
+				end
+				if (seen == false) then
+					table.insert(sCurrentTransaction.order, fullPath)
+				end
+				if (type(sCurrentTransaction.elems[fPath]) == "nil") then
+					sCurrentTransaction.elems[fPath] = { path=fPath, dir=fDir, e=elem }
+				end
+				if (type(sCurrentTransaction.changes[fullPath]) == "nil") then
+					sCurrentTransaction.changes[fullPath] = { a="notify",key1=pKey1,key2=pKey2,old=oldValue,v=pValue,pathTable=paths}
+				else
+					sCurrentTransaction.changes[fullPath].v = pValue
+				end
+			end
+		end
+	end
+end
+
+function startTransaction()
+	if (type(sCurrentTransaction) == "nil") then
+		sCurrentTransaction = { changes = {}, elems = {}, order = {} }
+	else
+		local parentTrans = sCurrentTransaction
+		sCurrentTransaction = { parent = parentTrans, changes = {}, elems = {}, order = {} }
+	end
+end
+
+function isInTransaction()
+	if (type(sCurrentTransaction) == "nil") then
+		return false
+	else
+		return true
+	end
+end
+
+function commitTransaction()
+	-- If there is a parent transaction, then just run the callbacks, but move the changes into the parent
+	if (sCurrentTransaction == nil) then
+		return
+	end
+	if (sCurrentTransaction.parent ~= nil) then
+		local trans = sCurrentTransaction
+		sCurrentTransaction = trans.parent
+		-- Copy the elems into the parent
+		for _,elem in pairs(trans.elems) do
+			if (type(sCurrentTransaction.elems[elem.path]) == "nil") then
+				sCurrentTransaction.elems[elem.path] = elem
+			end
+		end
+
+		-- Now call all the callbacks
+		for _,fullPath in ipairs(trans.order) do
+			local change = trans.changes[fullPath]
+			if (change.a == "notify") then
+				recurseCallback(sCallbacks, change.pathTable, change.old, change.e.value, 1, change.key1, change.key2)
+				DQUtils.yield()
+			else
+			end
+		end
+	else
+		local trans = sCurrentTransaction
+		sCurrentTransaction = nil
+		-- Commit the changes
+		for _,elem in pairs(trans.elems) do
+			-- Store the value
+			if (fs.exists("/storage" .. elem.dir) == false) then
+				fs.makeDir("/storage" .. elem.dir)
+			end
+			local h = fs.open("/storage" .. elem.path, "w")
+			h.write(textutils.serialize(elem.e.value))
+			h.close()
+			DQUtils.yield()
+		end
+		-- Now call all the callbacks
+		for _,fullPath in ipairs(trans.order) do
+			local change = trans.changes[fullPath]
+			if (change.a == "notify") then
+				recurseCallback(sCallbacks, change.pathTable, change.old, change.v, 1, change.key1, change.key2)
+				DQUtils.yield()
+			else
+			end
+		end
+	end
+end
+
+function registerChangeCallback(pKey1, pKey2, pFunction, pFuncData, pFireOnce, pOnlyOnValue)
+-- DQDebug.writeToLog("registerChangeCallback(" .. textutils.serialize(pKey1) .. ",".. tostring(pKey2) .. ", f, d, " .. tostring(pFireOnce) .. "," .. tostring(pOnlyOnValue) .. ")")
+	local fPath, fDir, fName, paths = flattenPath(pKey1, pKey2)
+	local callback = sCallbacks
+	local hasWilds = false
+	for _,v in ipairs(paths) do
+		if (string.sub(v, -1) == "*") then
+			hasWilds = true
+			local found = -1
+			for k,v2 in ipairs(callback.wildChildren) do
+				if (v2.path == string.sub(v, 1, -2)) then
+					found = k
+					break
+				end
+			end
+			if (found == -1) then
+				local newCallback = { path = string.sub(v, 1, -2), children = {}, wildChildren={}, funcs = {} }
+				table.insert(callback.wildChildren, newCallback)
+				callback = newCallback
+			else
+				callback = callback.wildChildren[found]
+			end
+		else
+			if (type(callback.children[v]) == "nil") then
+				callback.children[v] = { children = {}, wildChildren={}, funcs = {} }
+			end
+			callback = callback.children[v]
+		end
+	end
+	for _,v in pairs(callback.funcs) do
+		if (v.f == pFunction) then
+			return
+		end
+	end
+	local block = { f = pFunction, data = pFuncData }
+	if (type(pOnlyOnValue) ~= "nil") then
+		block.v = tostring(pOnlyOnValue)
+	end
+	table.insert(callback.funcs, block)
+-- DQDebug.dump(sCallbacks, "After Register")
+	if ((type(pFireOnce) ~= "nil") and (tostring(pFireOnce) == "true")) then
+		if (hasWilds == true) then
+			local matches = {}
+			findMatches("/storage", paths, 1, matches)
+-- DQDebug.dump(matches, "Matches")			
+			for _,v in ipairs(matches) do
+				local key1 = {}
+				for k=1,#v-1 do
+					key1[k] = v[k]
+				end
+				local value = get(key1, v[#v])
+				recurseCallback(sCallbacks, v, value, value, 1, key1, v[#v])
+			end
+		else
+			local value = get(pKey1, pKey2)
+			if (value ~= nil) then
+				if ((block.v == nil) or (tostring(value) == block.v)) then
+					pFunction(pFuncData, pKey1, pKey2, value, value)
+				end
+			end
+		end
+	end
+end
+
+function deregisterChangeCallback(pKey1, pKey2, pFunction)
+	local fPath, fDir, fName, paths = flattenPath(pKey1, pKey2)
+	local callback = sCallbacks
+	for _,v in ipairs(paths) do
+		if (string.sub(v, -1) == "*") then
+			local found = -1
+			for k,v2 in ipairs(callback.wildChildren) do
+				if (v2.path == string.sub(v, 1, -2)) then
+					found = k
+					break
+				end
+			end
+			if (found == -1) then
+				return
+			end
+			callback = callback.wildChildren[found]
+		else
+			if (type(callback.children[v]) == "nil") then
+				return
+			end
+			callback = callback.children[v]
+		end
+	end
+	local offset = 0
+	for k,v in pairs(callback.funcs) do
+		if (v.f == pFunction) then
+			offset = k
+			break
+		end
+	end
+	if (offset > 0) then
+		table.remove(callback.funcs, offset)
+	end
+end
+
+function getChildren(pKey)
+	local fPath, dir, file, path, fullPath = flattenPath(pKey)
+	local n = "/storage"
+	for _,v in ipairs(path) do
+		n = n .. "/" .. v
+	end
+	local flist = fs.list(n)
+	local r = {}
+	local m = {}
+	for _,v in ipairs(flist) do
+		local s,e = string.find(v, ".txt", -4, true)
+		local name
+		if (type(s) ~= "nil") then
+			name = string.sub(v, 1, s - 1) .. ""
+		else
+			name = v
+		end
+		if (m[name] ~= true) then
+			m[name] = true
+			table.insert(r, name)
+		end
+	end
+	return r
+end
+
+function get(pKey1, pKey2, pDefault)
+	local elem = retrieve(pKey1, false)
+	if (type(elem) == "nil") then
+		return pDefault
+	end
+	local keys
+	local defaults
+	if (type(pKey2) == "table") then
+		keys = pKey2
+		if (type(pDefault) == "nil") then
+			defaults = {}
+		else
+			defaults = pDefault
+		end
+	else
+		keys = {}
+		keys[1] = pKey2
+		defaults = {}
+		defaults[1] = pDefault
+	end
+	local results = {}
+	for k,v in ipairs(keys) do
+		local value = elem.value[v]
+		sChange_seed = sChange_seed + 1
+		elem.last = sChange_seed
+		local result
+		if (type(value) == "nil") then
+			if (type(defaults[k]) == "nil") then
+				result = nil
+			else
+				result = defaults[k]
+			end
+		elseif (type(value) == "table") then
+			result = textutils.unserialize(textutils.serialize(value))
+		elseif (type(value) == "string") then
+			result = value .. ""
+		else
+			result = value
+		end
+		table.insert(results, result)
+	end
+	if (type(pKey2) ~= "table") then
+		results = results[1]
+	end
+	return results
+end
+
+function getAll(pKey1)
+	local elem = retrieve(pKey1, false)
+	if (type(elem) == "nil") then
+		return nil
+	end
+	local results = {}
+	for k,v in pairs(elem.value) do
+		local result
+		if (type(v) == "nil") then
+			result = nil
+		elseif (type(v) == "table") then
+			result = textutils.unserialize(textutils.serialize(v))
+		elseif (type(v) == "string") then
+			result = v .. ""
+		else
+			result = v
+		end
+		results[k] = result
+	end
+	return results
+end
+
+local sRemotes = {}
+
+function registerRemote(pKey1, pFunc, pData)
+	local keys
+	if (type(pKey1) == "string") then
+		keys = {}
+		keys[1] = pKey1
+	elseif (type(pKey1) == "table") then
+		keys = pKey1
+	end
+	local pointer = sRemotes
+	for k,v in ipairs(keys) do
+		if (type(pointer[v]) == "nil") then
+			pointer[v] = {}
+		end
+		pointer = pointer[v]
+	end
+	pointer["__f__"] = pFunc
+	pointer["__d__"] = pData
+end
+
+function lookupRemote(pKey1)
+	local keys
+	if (type(pKey1) == "string") then
+		keys = {}
+		keys[1] = pKey1
+	elseif (type(pKey1) == "table") then
+		keys = pKey1
+	end
+	local pointer = sRemotes
+	for k,v in ipairs(keys) do
+-- DQDebug.writeToLog("lookupRemote: looking for " .. v)	
+		if (type(pointer[v]) == "table") then
+-- DQDebug.writeToLog("Found new pointer")		
+			pointer = pointer[v]
+		else
+-- DQDebug.writeToLog("No pointer")
+			break
+		end
+	end
+	if (pointer == sRemotes) then
+-- DQDebug.writeToLog("No match")	
+		return nil
+	end
+-- DQDebug.dump(pointer)	
+	return { f = pointer["__f__"], d = pointer["__d__"] }
+end
+
+function updateExpires(pKey1, pTime)
+	store(pKey1, "__startupnum", sStartupNum)
+	store(pKey1, "__expiry", pTime)
+end
+
+function getAsync(pKey1, pKey2, pDefault, pFunc, pData)
+-- DQDebug.writeToLog("DQStore.getAsync(pKey1=" .. DQDebug.formatInline(pKey1) .. ", pKey2=" .. DQDebug.formatInline(pKey2) .. ", pDefault=" .. DQDebug.formatInline(pDefault) .. ")")
+	local elem = retrieve(pKey1, false)
+	if (type(elem) == "nil") then
+-- DQDebug.writeToLog("Got nil from retrieve")
+		local remote = lookupRemote(pKey1)
+		if (type(remote) == "nil") then
+-- DQDebug.writeToLog("Got nill from remote, using defaults")
+			pFunc(pData, pDefault)
+			return
+		end
+-- DQDebug.writeToLog("Calling remote")
+		remote.f(remote.d, pKey1, pKey2, pDefault, pFunc, pData)
+		return
+	end
+-- DQDebug.dump(elem, "DQStore.getAsync retrieve")	
+	local keys
+	local defaults
+	if (type(pKey2) == "string") then
+		keys = {}
+		keys[1] = pKey2
+		defaults = {}
+		defaults[1] = pDefault
+	elseif (type(pKey2) == "table") then
+		keys = pKey2
+		defaults = pDefault
+		if (type(defaults) == "nil") then
+			defaults = {}
+		end
+	end
+	local results = {}
+	for k,v in ipairs(keys) do
+		local value = elem.value[v]
+		sChange_seed = sChange_seed + 1
+		elem.last = sChange_seed
+		local result
+		if (type(value) == "nil") then
+			result = defaults[k]
+		elseif (type(value) == "table") then
+			result = textutils.unserialize(textutils.serialize(value))
+		elseif (type(value) == "string") then
+			result = value .. ""
+		else
+			result = value
+		end
+		table.insert(results, result)
+	end
+	if (type(pKey2) == "string") then
+		results = results[1]
+	end
+	pFunc(pData, results)
+end
+
+local function handleLookup(pData, pType, pMessage, pSenderID, pReplyTo)
+	local key1 = textutils.unserialize(pMessage)
+	local elem = retrieve(key1, false)
+	if (type(elem) == "nil") then
+		DQNet.sendReplyTo(pSenderID, pReplyTo, "lookupdata", textutils.serialize(nil))
+	else
+		local sendData = {}
+		for k,v in pairs(elem.value) do
+			if (string.sub(k, 1, 2) ~= "__") then
+				sendData[k] = v
+			end
+		end
+		DQNet.sendReplyTo(pSenderID, pReplyTo, "lookupdata", textutils.serialize(sendData))
+	end
+end
+
+function setup(pProgramTitle, pConfig, pEventHandlers)
+	sConfig = pConfig
+	-- Create the persistence directory if it doesn't already exist
+	if (fs.exists("/storage") == false) then
+		fs.makeDir("/storage")
+	end
+	-- Get the unique startup number (used to guarantee forward looking time)
+	sStartupNum = increment("internal", "startup")
+	if (type(DQNet) ~= "nil") then
+		DQNet.registerMessageCallback("lookup", handleLookup)
+	end
+end

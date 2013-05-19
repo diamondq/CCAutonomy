@@ -1,0 +1,589 @@
+-- DQTurtle
+
+local sTimer = false
+local sWorld = {}
+local debug = false
+local logger = DQDebug.getDebugLogger("DQTurtle", debug)
+
+local TA = DQObject.class("TA", ActorSystem.TypedActor)
+
+function TA:preStart()
+	logger:debug("preStart()")
+	local rSelf = TA:cast(self)
+	rSelf.history = {}
+	rSelf.nextMoveSend = DQStore.get("TurtleActor", "nextMoveSend", {})
+end
+
+function TA:eventNextMoveSend(pMessage, pData)
+	logger:debug("eventNextMoveSend(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	table.insert(rSelf.nextMoveSend, pData)
+	if (DQStore.isInTransaction() == true) then
+		logger.debug("IN TRANSACTION? WHY?")
+	end
+	DQDebug.dump(rSelf.nextMoveSend, "Next Move Send")
+	DQStore.store("TurtleActor", "nextMoveSend", rSelf.nextMoveSend)
+	return true
+end
+
+function TA:eventRecord(pMessage, pData)
+	logger:debug("eventRecord(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	if (pData["type"] == "move") then
+		table.insert(rSelf.history, { id=pData.id, moves={} } )
+	end
+	return true
+end
+
+function TA:eventGetRecord(pMessage, pData)
+	logger:debug("eventGetRecord(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local o = -1
+	for k,v in ipairs(rSelf.history) do
+		if (v.id == pData) then
+			o = k
+			break
+		end
+	end
+	if (o ~= -1) then
+		rSelf:getSender():tell("record", rSelf.history[o], rSelf:getActorRef())
+		table.remove(rSelf.history, o)
+	else
+		rSelf:getSender():tell("record", nil, rSelf:getActorRef())
+	end
+	return true
+end
+
+function TA:eventDetect(pMessage, pData)
+	logger:debug("eventDetect(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local f = function(pSelf, pResult)	
+		s:tell("detectResult", pResult, a)
+	end
+	if (pData == "u") then
+		detectUp(f, rSelf)
+	elseif (pData == "d") then
+		detectDown(f, rSelf)
+	else
+		detect(f, rSelf)
+	end
+	return true
+end
+
+function TA:eventMove(pMessage, pData)
+	logger:debug("eventMove(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local f = function(pSelf, pResult)
+		logger:debug("moveResult(%s)", DQDebug.serialize1(pResult))
+		if ((pResult == true) and (#pSelf.history > 0)) then
+			local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" })
+			loc[1] = tonumber(loc[1])
+			loc[2] = tonumber(loc[2])
+			loc[3] = tonumber(loc[3])
+			loc[4] = tonumber(loc[4])
+			for _,v in ipairs(pSelf.history) do
+				table.insert(v.moves, { event=pMessage, dir=pData, loc=loc } )
+			end
+		end
+		if ((pResult == true) and (#pSelf.nextMoveSend > 0)) then
+			for _,v in ipairs(pSelf.nextMoveSend) do
+				local t = ActorSystem.actorFor(v.target)
+				local s2
+				if (type(v.sender) ~= "nil") then
+					s2 = ActorSystem.actorFor(v.sender)
+				else
+					s2 = nil
+				end
+				logger:debug("NEXT_MOVE_SEND: Sending message %s data %s to %s from %s", DQDebug.serialize4(v.message, v.data, v.target, v.sender))
+				t:tell(v.message, v.data, s2)
+			end
+			pSelf.nextMoveSend = {}
+			DQStore.store("TurtleActor", "nextMoveSend", pSelf.nextMoveSend)
+		end
+		s:tell("moveResult", pResult, a)
+	end
+	if (pData == "u") then
+		up(f, rSelf)
+	elseif (pData == "d") then
+		down(f, rSelf)
+	elseif (pData == "f") then
+		forward(f, rSelf)
+	elseif (pData == "b") then
+		back(f, rSelf)
+	elseif (pData == "l") then
+		turnLeft(f, rSelf)
+	elseif (pData == "r") then
+		turnRight(f, rSelf)
+	end
+	return true
+end
+
+local function intUpdateWorld(pDir, pValue)
+	if (type(DQMovePlanner) ~= "nil") then
+		local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" })
+		loc[1] = tonumber(loc[1])
+		loc[2] = tonumber(loc[2])
+		loc[3] = tonumber(loc[3])
+		loc[4] = tonumber(loc[4])
+		if (pDir == "u") then
+			loc[3] = loc[3] + 1
+		elseif (pDir == "d") then
+			loc[3] = loc[3] - 1
+		else
+			if (loc[4] == 1) then
+				loc[2] = loc[2] - 1
+			elseif (loc[4] == 2) then
+				loc[1] = loc[1] + 1
+			elseif (loc[4] == 3) then
+				loc[2] = loc[2] + 1
+			elseif (loc[4] == 4) then
+				loc[1] = loc[1] - 1
+			end
+		end
+		DQMovePlanner.updateWorldInfo(getWorld(), { loc[1], loc[2], loc[3] }, pValue)
+	end
+end
+
+local function intDig(pDir, pF)
+	if (pDir == "u") then
+		digUp(pF, rSelf)
+	elseif (pDir == "d") then
+		digDown(pF, rSelf)
+	else
+		dig(pF, rSelf)
+	end
+end
+
+local function intSuck(pDir, pF)
+	if (pDir == "u") then
+		suckUp(pF, rSelf)
+	elseif (pDir == "d") then
+		suckDown(pF, rSelf)
+	else
+		suck(pF, rSelf)
+	end
+end
+
+function TA:eventDig(pMessage, pData)
+	logger:debug("eventDig(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local dir
+	local invSlot
+	if (type(pData) == "table") then
+		dir = pData[1]
+		invSlot = pData[2]
+	else
+		dir = pData
+		invSlot = nil
+	end
+	local f = function(pSelf, pResult)	
+		intUpdateWorld(dir, DQPos.sClear)
+		s:tell("digResult", pResult, a)
+	end
+	if (type(invSlot) ~= "nil") then
+		local f2 = function(pSelf, pResult)
+			if (pResult == true) then
+				intDig(dir, f)
+			else
+				s:tell("digResult", pResult, a)
+			end
+		end
+		select(invSlot, f2, rSelf)
+	else
+		intDig(dir, f)
+	end
+	return true
+end
+
+function TA:eventPlace(pMessage, pData)
+	logger:debug("eventPlace(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local dir
+	local invSlot
+	local text
+	dir = pData[1]
+	invSlot = pData[2]
+	text = pData[3]
+	local f = function(pSelf, pResult)	
+		intUpdateWorld(dir, DQPos.sInUse)
+		s:tell("placeResult", pResult, a)
+	end
+	local f2 = function(pSelf, pResult)
+		if (pResult == true) then
+			if (dir == "u") then
+				placeUp(f, rSelf)
+			elseif (dir == "d") then
+				placeDown(f, rSelf)
+			else
+				place(text, f, rSelf)
+			end
+		else
+			s:tell("placeResult", pResult, a)
+		end
+	end
+	select(invSlot, f2, rSelf)
+	return true
+end
+
+function TA:eventSuck(pMessage, pData)
+	logger:debug("eventSuck(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local dir
+	local invSlot
+	if (type(pData) == "table") then
+		dir = pData[1]
+		invSlot = pData[2]
+	else
+		dir = pData
+		invSlot = nil
+	end
+	local f = function(pSelf, pResult)	
+		s:tell("suckResult", pResult, a)
+	end
+	if (type(invSlot) ~= "nil") then
+		local f2 = function(pSelf, pResult)
+			if (pResult == true) then
+				intSuck(dir, f)
+			else
+				s:tell("suckResult", pResult, a)
+			end
+		end
+		select(invSlot, f2, rSelf)
+	else
+		intSuck(dir, f)
+	end
+	return true
+end
+
+function TA:eventRefuel(pMessage, pData)
+	logger:debug("eventSuck(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local invSlot = pData[1]
+	local amount = pData[2]
+	local f = function(pSelf, pResult)	
+		s:tell("refuelResult", pResult, a)
+	end
+	local f2 = function(pSelf, pResult)
+		if (pResult == true) then
+			refuel(amount, f, pSelf)
+		else
+			s:tell("refuelResult", pResult, a)
+		end
+	end
+	select(invSlot, f2, rSelf)
+	return true
+end
+
+
+function TA:eventDrop(pMessage, pData)
+	logger:debug("eventDrop(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local dir = pData[1]
+	local invSlot = pData[2]
+	local amount = pData[3]
+	local f = function(pSelf, pResult)	
+		s:tell("dropResult", pResult, a)
+	end
+	local f2 = function(pSelf, pResult)
+		if (pResult == true) then
+			if (dir == "u") then
+				dropUp(amount, f, rSelf)
+			elseif (dir == "d") then
+				dropDown(amount, f, rSelf)
+			else
+				drop(amount, f, rSelf)
+			end
+		else
+			s:tell("dropResult", pResult, a)
+		end
+	end
+	select(invSlot, f2, rSelf)
+	return true
+end
+
+function TA:eventSelect(pMessage, pData)
+	logger:debug("eventSelect(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local invSlot = pData
+	local f = function(pSelf, pResult)	
+		s:tell("selectResult", pResult, a)
+	end
+	select(invSlot, f, rSelf)
+	return true
+end
+
+-- pData => slot
+function TA:eventCompareTo(pMessage, pData)
+	logger:debug("eventCompareTo(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local invSlot = pData
+	local f = function(pSelf, pResult)	
+		s:tell("compareToResult", pResult, a)
+	end
+	compareTo(invSlot, f, rSelf)
+	return true
+end
+
+function TA:eventTransferTo(pMessage, pData)
+	logger:debug("eventTransferTo(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = TA:cast(self)
+	local s = rSelf:getSender()
+	local a = rSelf:getActorRef()
+	local invSlot = pData[1]
+	local amount = pData[2]
+	local f = function(pSelf, pResult)	
+		s:tell("transferToResult", pResult, a)
+	end
+	transferTo(invSlot, amount, f, rSelf)
+	return true
+end
+
+local function callback(pData, pEvent, pParam1, pParam2, pParam3)
+	logger:debug("callback(%s, %s, %s, %s)", DQDebug.serialize4(pEvent, pParam1, pParam2, pParam3))
+	local success = pParam2
+	-- Update the location
+	if (success == true) then
+		if (pData.a == "f") then
+			DQStore.store("move", "moving", false)
+			local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" })
+			if (loc[4] == 1) then
+				loc[2] = loc[2] - 1
+			elseif (loc[4] == 2) then
+				loc[1] = loc[1] + 1
+			elseif (loc[4] == 3) then
+				loc[2] = loc[2] + 1
+			elseif (loc[4] == 4) then
+				loc[1] = loc[1] - 1
+			end
+			DQStore.startTransaction()
+			DQStore.store("location", "gps_x", loc[1])
+			DQStore.store("location", "gps_y", loc[2])
+			DQStore.commitTransaction()
+		elseif (pData.a == "b") then
+			DQStore.store("move", "moving", false)
+			local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" })
+			if (loc[4] == 1) then
+				loc[2] = loc[2] + 1
+			elseif (loc[4] == 2) then
+				loc[1] = loc[1] - 1
+			elseif (loc[4] == 3) then
+				loc[2] = loc[2] - 1
+			elseif (loc[4] == 4) then
+				loc[1] = loc[1] + 1
+			end
+			DQStore.startTransaction()
+			DQStore.store("location", "gps_x", loc[1])
+			DQStore.store("location", "gps_y", loc[2])
+			DQStore.commitTransaction()
+		elseif (pData.a == "l") then
+			DQStore.store("move", "moving", false)
+			local loc = DQStore.get("location", "dir")
+			loc = loc - 1
+			if (loc == 0) then
+				loc = 4
+			end
+			DQStore.store("location", "dir", loc)
+		elseif (pData.a == "r") then
+			DQStore.store("move", "moving", false)
+			local loc = DQStore.get("location", "dir")
+			loc = loc + 1
+			if (loc == 5) then
+				loc = 1
+			end
+			DQStore.store("location", "dir", loc)
+		elseif (pData.a == "u") then
+			DQStore.store("move", "moving", false)
+			local loc = DQStore.get("location", "gps_z")
+			loc = loc + 1
+			DQStore.store("location", "gps_z", loc)
+		elseif (pData.a == "d") then
+			DQStore.store("move", "moving", false)
+			local loc = DQStore.get("location", "gps_z")
+			loc = loc - 1
+			DQStore.store("location", "gps_z", loc)
+		end
+	else
+		if ((pData.a == "f") or (pData.a == "b") or (pData.a == "l") or (pData.a == "r") or (pData.a == "u") or (pData.a == "d")) then
+			DQStore.store("move", "moving", false)
+		end
+	end
+	if (type(pData.f) == "function") then
+		pData.f(pData.d, success)
+	end
+end
+
+function forward(pFunc, pData)
+	DQStore.store("move", "moving", true)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData, a="f" }, turtle.native.forward())
+end
+function back(pFunc, pData)
+	DQStore.store("move", "moving", true)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData, a="b" }, turtle.native.back())
+end
+function turnLeft(pFunc, pData)
+	DQStore.store("move", "moving", true)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData, a="l" }, turtle.native.turnLeft())
+end
+function turnRight(pFunc, pData)
+	DQStore.store("move", "moving", true)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData, a="r" }, turtle.native.turnRight())
+end
+function up(pFunc, pData)
+	DQStore.store("move", "moving", true)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData, a="u" }, turtle.native.up())
+end
+function down(pFunc, pData)
+	DQStore.store("move", "moving", true)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData, a="d" }, turtle.native.down())
+end
+function detect(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.detect())
+end
+function detectUp(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.detectUp())
+end
+function detectDown(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.detectDown())
+end
+function dig(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.dig())
+end
+function digUp(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.digUp())
+end
+function digDown(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.digDown())
+end
+function place(pText, pFunc, pData)
+	if (type(pText) == "nil") then
+		DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.place())
+	else
+		DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.place(pText))
+	end
+end
+function placeUp(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.placeUp())
+end
+function placeDown(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.placeDown())
+end
+function suck(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.suck())
+end
+function suckUp(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.suckUp())
+end
+function suckDown(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.suckDown())
+end
+function drop(pAmount, pFunc, pData)
+	if (type(pAmount) == "nil") then
+		DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.drop())
+	else
+		DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.drop(pAmount))
+	end
+end
+function dropUp(pAmount, pFunc, pData)
+	if (type(pAmount) == "nil") then
+		DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.dropUp())
+	else
+		DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.dropUp(pAmount))
+	end
+end
+function dropDown(pAmount, pFunc, pData)
+	if (type(pAmount) == "nil") then
+		DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.dropDown())
+	else
+		DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.dropDown(pAmount))
+	end
+end
+function select(pOffset, pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.select(pOffset))
+end
+function refuel(pAmount, pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.refuel(pAmount))
+end
+function suck(pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.suck())
+end
+function transferTo(pSlot, pQuantity, pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.transferTo(pSlot, pQuantity))
+end
+function compareTo(pSlot, pFunc, pData)
+	DQUtils.registerOneTimeEventCallback("turtle_response", callback, { f=pFunc, d=pData }, turtle.native.compareTo(pSlot))
+end
+function getFuelLevel()
+	return turtle.native.getFuelLevel()
+end
+function getItemCount(pSlot)
+	return turtle.native.getItemCount(pSlot)
+end
+
+local function onSuck()
+	local c = getItemCount(16)
+	if (c > 0) then
+		refuel(c - 1)
+	end
+end
+
+local function onSelect()
+	local c = getItemCount(16)
+	if (c > 0) then
+		refuel(c - 1)
+	else
+		-- Assume that we were started facing an inventory with fuel
+		suck(onSuck)
+	end
+end
+
+local function onGetFuel()
+	DQUtils.deregisterEventCallback("timer", onGetFuel, sTimer)
+	sTimer = false
+	local fl = getFuelLevel()
+	if (fl == 0) then
+		select(16, onSelect)
+	end
+end
+
+function setWorld(pWorld)
+	sWorld = pWorld
+end
+
+function getWorld()
+	return sWorld
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	ActorSystem.actorCreate(TA, "/Turtle")
+	local fl = getFuelLevel()
+	if (fl == 0) then
+		sTimer = os.startTimer(5)
+		DQUtils.registerEventCallback("timer", onGetFuel, nil, sTimer)
+	end
+	local wasmoving = DQStore.get("move", "moving", false)
+	if (tostring(wasmoving) == "true") then
+		DQStore.remove("location", "dir")
+		DQStore.remove("location", "gps_x")
+		DQStore.remove("location", "gps_y")
+		DQStore.remove("location", "gps_z")
+		error("Failed to update")
+	end
+end

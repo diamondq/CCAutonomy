@@ -1,0 +1,475 @@
+-- DenseFarmer
+
+local debug = true
+local logger = DQDebug.getDebugLogger("FarmerJob", debug)
+
+-- States (in rough order): { emptyInventory, moveToStart, clear, plant, changeLevel, emptyInventory }
+
+local DFJob = DQObject.class("DFJob", FiniteStateMachine.FSMActor)
+function DFJob:preStart()
+	local rSelf = DFJob:cast(self)
+	rSelf.vsuper:preStart()
+	rSelf.turtle = rSelf:getContext():actorFor("/Turtle")
+end
+
+-- Data: { topOfTube = { x=x,y=y,z=z }, size=3, lighttype=0 }
+function DFJob:whenStartingEventBegin(pMessage, pData)
+	logger:debug("whenStartingEventBegin(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	rSelf.location = pData.data
+	rSelf.floorNum = string.sub(rSelf.location[3], 6) .. ""
+	rSelf.level = 5
+	rSelf.size = 3
+	rSelf:setState("getDetails")
+	rSelf:getContext():getParent():tell("ack", nil, rSelf:getActorRef())
+	return true
+end
+
+-- This action needs to issue a request to get the details about this segment
+function DFJob:onGetDetails()
+	logger:debug("onGetDetails()")
+	local rSelf = DFJob:cast(self)
+	rSelf:getContext():actorFor("/MainStore"):tell("get",
+		{ rSelf.location, { "status", "x1", "y1", "x2", "y2" } }, rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenGetDetailsEventData(pMessage, pData)
+	logger:debug("whenGetDetailsEventData(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	-- Verify that the segment is still being cleared
+	if (pData[1] ~= "Occupied") then
+		rSelf:getContext():getParent():tell("cancelledJob", nil, rSelf:getActorRef())
+		return true
+	end
+	rSelf.x1 = tonumber(pData[2])
+	rSelf.y1 = tonumber(pData[3])
+	rSelf.x2 = tonumber(pData[4])
+	rSelf.y2 = tonumber(pData[5])
+	
+	rSelf:setState("initialEmptyInventory")
+	return true
+end
+
+function DFJob:onInitialEmptyInventory()
+	logger:debug("onInitialEmptyInventory()")
+	local rSelf = DFJob:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("emptyInventory", nil, rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenInitialEmptyInventoryEventEmptyInventoryResult(pMessage, pData)
+	logger:debug("whenInitialEmptyInventoryEventEmptyInventoryResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf:setState("loadInventory")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to empty inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onLoadInventory()
+	logger:debug("onLoadInventory()")
+	local rSelf = DFJob:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("loadInventory", { { blockname="Seeds", count=64 } }, rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenLoadInventoryEventLoadInventoryResult(pMessage, pData)
+	logger:debug("whenLoadInventoryEventLoadInventoryResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf.afterFuel = "moveToStart"
+		rSelf:setState("loadFuel")
+	elseif (pData == false) then
+		-- Check that we at least got one
+		if (DQTurtle.getItemCount(1) > 0) then
+			rSelf.afterFuel = "moveToStart"
+			rSelf:setState("loadFuel")
+		else
+			rSelf:getContext():getParent():tell("jobResult", "No seeds are available in inventory", rSelf:getActorRef())
+		end
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to load inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onLoadFuel()
+	logger:debug("onLoadFuel()")
+	local rSelf = DFJob:cast(self)
+	-- Check fuel levels and respond
+	if (DQTurtle.getFuelLevel() < 2000) then
+		error("Refueling not implemented yet")
+	else
+		rSelf:setState(rSelf.afterFuel)
+	end
+	return true
+end
+
+function DFJob:onMoveToStart()
+	logger:debug("onMoveToStart()")
+	local rSelf = DFJob:cast(self)
+	rSelf.dx = 1
+	rSelf.dy = 0
+	rSelf.sx = 0
+	rSelf.sy = -1
+	rSelf:calculateNext()
+	local ax = math.min(rSelf.x1, rSelf.x2) + 4
+	local ay = math.min(rSelf.y1, rSelf.y2) + 4
+	local az = (rSelf.floorNum * 10) + 9 - ((5 - rSelf.level) * 2)
+	-- Send a message to the mover to start the turtle moving in the right direction
+	rSelf:getContext():actorFor("/Mover"):tell("move", { x=ax, y=ay, z=az, dir=rSelf.nDir }, rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenMoveToStartEventMoveResult(pMessage, pData)
+	logger:debug("whenMoveToStartEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z" } )
+		rSelf.x = tonumber(loc[1])
+		rSelf.y = tonumber(loc[2])
+		rSelf.z = tonumber(loc[3])
+		logger:debug("current pos = (%s, %s, %s)", DQDebug.serialize3(rSelf.x, rSelf.y, rSelf.z))
+		
+		-- Start recording movements for undoing the spiral
+		rSelf.turtle:tell("record", { type="move", id=1 }, rSelf:getActorRef())
+		
+		rSelf:setState("clearCheck")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to move to start", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onClearCheck()
+	logger:debug("onClearCheck()")
+	local rSelf = DFJob:cast(self)
+	rSelf.turtle:tell("detect", "f", rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenClearCheckEventDetectResult(pMessage, pData)
+	logger:debug("whenClearCheckEventDetectResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf:setState("clear")
+	else
+		rSelf:setState("clearMove")
+	end
+	return true
+end
+
+function DFJob:onClear()
+	logger:debug("onClear()")
+	local rSelf = DFJob:cast(self)
+	rSelf.turtle:tell("dig", "f", rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenClearEventDigResult(pMessage, pData)
+	logger:debug("whenClearEventDigResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	rSelf:setState("clearMove")
+	return true
+end
+
+function DFJob:calculateNext()
+	local o={sx=self.sx, sy=self.sy, dx=self.dx, dy=self.dy, ndir=self.nDir }
+	-- Calculate next movement
+	if ((self.sx == self.sy)
+		or ((self.sx > 0) and (self.sx == (-1 * self.sy)))
+		or ((self.sx < 0) and (self.sx == ((-1 * self.sy) - 1)))) then
+		local t = self.dx
+		self.dx = -1 * self.dy
+		self.dy = t
+	end
+	self.nx = self.sx + self.dx
+	self.ny = self.sy + self.dy
+	-- Dir
+	if ((self.nx > self.sx) and (self.ny == self.sy)) then
+		self.nDir = 2
+	elseif ((self.nx < self.sx) and (self.ny == self.sy)) then
+		self.nDir = 4
+	elseif ((self.nx == self.sx) and (self.ny > self.sy)) then
+		self.nDir = 1
+	elseif ((self.nx == self.sx) and (self.ny < self.sy)) then
+		self.nDir = 3
+	else
+		logger:debug("?? (nx=%s, ny=%s, sx=%s, sy=%s)", DQDebug.serialize4(self.nx, self.ny, self.sx, self.sy))
+		error("How did this happen")
+	end
+	logger:debug("calculateNext from %s to %s", DQDebug.serialize2(o, {nx=self.nx, ny=self.ny, dx=self.dx, dy=self.dy, ndir=self.nDir }))
+end
+
+function DFJob:onClearMove()
+	logger:debug("onClearMove()")
+	local rSelf = DFJob:cast(self)
+	rSelf.sx = rSelf.nx
+	rSelf.sy = rSelf.ny
+	-- Calculate next movement
+	rSelf:calculateNext()
+	local d = 0
+	if (d == 1) then
+		if ((rSelf.sx <= rSelf.maxS) and (rSelf.sy <= rSelf.maxS)) then
+			rSelf:setState("clearMove")
+		end
+		return true
+	else
+		local ax = rSelf.x + rSelf.sx
+		local ay = rSelf.y - (rSelf.sy + 1)
+
+		if ((rSelf.sx <= rSelf.size) and (rSelf.sx >= ((-1 * rSelf.size) - 1))
+			and (rSelf.sy <= rSelf.size) and (rSelf.sy >= ((-1 * rSelf.size) - 1))) then
+			logger:debug("moving to (%s, %s, %s, %s) with (%s, %s)", DQDebug.serialize6(ax, ay, rSelf.z, rSelf.nDir, rSelf.sx, rSelf.sy))
+			rSelf:getContext():actorFor("/Mover"):tell("move", {
+				x=ax, y=ay, z=rSelf.z, dir=rSelf.nDir }, rSelf:getActorRef())
+		else
+			-- Get the record
+			rSelf.turtle:tell("getRecord", 1, rSelf:getActorRef())
+		end
+		return true
+	end
+end
+
+function DFJob:whenClearMoveEventRecord(pMessage, pData)
+	logger:debug("whenClearMoveEventRecord(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	rSelf.rewind = pData
+	rSelf.rewindPos = #rSelf.rewind.moves
+	rSelf:setState("plantMove")
+	return true
+end
+
+function DFJob:whenClearMoveEventMoveResult(pMessage, pData)
+	logger:debug("whenClearMoveEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf:setState("clearCheck")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to move with clearing", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onPlantMove()
+	logger:debug("onPlantMove()")
+	local rSelf = DFJob:cast(self)
+	local oDir = rSelf.rewind.moves[rSelf.rewindPos].dir
+	local dir
+	if (oDir == "f") then
+		dir = "b"
+	elseif (oDir == "r") then
+		dir = "l"
+	elseif (oDir == "l") then
+		dir = "r"
+	end
+	rSelf.turtle:tell("move", dir, rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenPlantMoveEventMoveResult(pMessage, pData)
+	logger:debug("whenPlantMoveEventMoveResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		local oDir = rSelf.rewind.moves[rSelf.rewindPos].dir
+		if (oDir == "f") then
+			-- See if this is one of the corners, if so, skip them
+			local loc = rSelf.rewind.moves[rSelf.rewindPos].loc
+			if (((loc[1] == rSelf.x + rSelf.size) and (loc[2] == rSelf.y + rSelf.size))
+				or ((loc[1] == rSelf.x + rSelf.size) and (loc[2] == rSelf.y - rSelf.size - 1))
+				or ((loc[1] == rSelf.x - rSelf.size - 1) and (loc[2] == rSelf.y - rSelf.size - 1))
+				or ((loc[1] == rSelf.x - rSelf.size - 1) and (loc[2] == rSelf.y + rSelf.size))) then
+				rSelf:setState("plantNextMove")
+			-- If this is the movement corridors on level 1, then skip planting
+			elseif ((rSelf.level == 1) and ((loc[1] == rSelf.x) or (loc[2] == rSelf.y))) then
+				rSelf:setState("plantNextMove")
+			else
+				rSelf:setState("plantDig")
+			end
+		else
+			rSelf:setState("plantNextMove")
+		end
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to plant", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onPlantDig()
+	logger:debug("onPlantDig()")
+	local rSelf = DFJob:cast(self)
+	rSelf.turtle:tell("dig", "f", rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenPlantDigEventDigResult(pMessage, pData)
+	logger:debug("whenPlantDigEventDigResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf:setState("plantPlace")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to dig", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onPlantPlace()
+	logger:debug("onPlantPlace()")
+	local rSelf = DFJob:cast(self)
+	rSelf.turtle:tell("place", { "f", 1 }, rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenPlantPlaceEventPlaceResult(pMessage, pData)
+	logger:debug("whenPlantPlaceEventPlaceResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		-- Check inventory
+		local count = DQTurtle.getItemCount(1)
+		if (count < 2) then
+			rSelf:setState("refill")
+		else
+			rSelf:setState("plantNextMove")
+		end
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to plant", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onPlantNextMove()
+	logger:debug("onPlantNextMove()")
+	local rSelf = DFJob:cast(self)
+	rSelf.rewindPos = rSelf.rewindPos - 1
+	if (rSelf.rewindPos > 0) then
+		rSelf:setState("plantMove")
+	else
+		rSelf:setState("nextLevel")
+	end
+	return true
+end
+
+function DFJob:onNextLevel()
+	logger:debug("onNextLevel()")
+	local rSelf = DFJob:cast(self)
+	rSelf.level = rSelf.level - 1
+	if (rSelf.level == 0) then
+		rSelf:setState("emptyInventory")
+	else
+		rSelf:setState("moveToStart")
+	end
+	return true
+end
+
+function DFJob:onEmptyInventory()
+	logger:debug("onEmptyInventory()")
+	local rSelf = DFJob:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("emptyInventory", nil, rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenEmptyInventoryEventEmptyInventoryResult(pMessage, pData)
+	logger:debug("whenEmptyInventoryEventEmptyInventoryResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf:getContext():getParent():tell("jobResult", true, rSelf:getActorRef())
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to empty inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onRefill()
+	logger:debug("onRefill()")
+	local rSelf = DFJob:cast(self)
+	-- First see if there are any other items that are the same
+	rSelf.refillSlot = 1
+	rSelf:setState("refillCompare")
+	return true
+end
+
+function DFJob:onRefillCompare()
+	logger:debug("onRefillCompare()")
+	local rSelf = DFJob:cast(self)
+	rSelf.refillSlot = rSelf.refillSlot + 1
+	if (rSelf.refillSlot > 16) then
+		rSelf:setState("refillFromInv")
+	else
+		rSelf.turtle:tell("compareTo", rSelf.refillSlot, rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:whenRefillCompareEventCompareToResult(pMessage, pData)
+	logger:debug("whenRefillCompareEventCompareToResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf.turtle:tell("select", rSelf.refillSlot, rSelf:getActorRef())
+	elseif (pData == false) then
+		rSelf:setState("refillCompare")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to compare inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:whenRefillCompareEventSelectResult(pMessage, pData)
+	logger:debug("whenRefillCompareEventSelectResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf.turtle:tell("transferTo", { 1, math.min(64 - DQTurtle.getItemCount(1), DQTurtle.getItemCount(rSelf.refillSlot)) }, rSelf:getActorRef())
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to select inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:whenRefillCompareEventTransferToResult(pMessage, pData)
+	logger:debug("whenRefillCompareEventTransferToResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf:setState("plantNextMove")
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to select inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function DFJob:onRefillFromInv()
+	logger:debug("onRefillFromInv()")
+	local rSelf = DFJob:cast(self)
+	rSelf:getContext():actorFor("/CommonTurtleEvents"):tell("loadInventory", { { blockname="Seeds", count=64 } }, rSelf:getActorRef())
+	return true
+end
+
+function DFJob:whenRefillFromInvEventLoadInventoryResult(pMessage, pData)
+	logger:debug("whenLoadInventoryEventLoadInventoryResult(%s, %s)", DQDebug.serialize2(pMessage, pData))
+	local rSelf = DFJob:cast(self)
+	if (pData == true) then
+		rSelf.afterFuel = "plantNextMove"
+		rSelf:setState("loadFuel")
+	elseif (pData == false) then
+		-- If we didn't get any, then we're finished for now. Not an error, we'll just wait for the current crop to mature
+		if (DQTurtle.getItemCount(1) == 0) then
+			rSelf:setState("emptyInventory")
+		else
+			rSelf.afterFuel = "plantNextMove"
+			rSelf:setState("loadFuel")
+		end
+	else
+		rSelf:getContext():getParent():tell("jobResult", "Unable to load inventory", rSelf:getActorRef())
+	end
+	return true
+end
+
+function setup(pTitle, pConfig, pEventHandlers)
+	DQWorkerTurtle.addJob("farm", DFJob)
+	-- local loc = DQStore.get("location", { "gps_x", "gps_y", "gps_z", "dir" }, {} )
+	-- if (type(loc["gps_x"]) ~= "nil") then
+--		local r = ActorSystem.actorCreate(DFJob, "/TEST")
+--		r:tell("begin", { topOfTube={x=-995, y=1012, z=19, dir=2}, size=3, lighttype=0}, nil)
+--	end
+end
